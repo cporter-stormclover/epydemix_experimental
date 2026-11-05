@@ -306,25 +306,58 @@ def project(calibration_bundle, config_path, output):
 
 @cli.command()
 @click.argument("config_path", type=click.Path(exists=True))
-def validate(config_path):
+@click.option(
+    "--prompt",
+    "prompt_path",
+    default=None,
+    type=click.Path(exists=True),
+    help="File with the prompt the config answers. Parameters set to a number "
+    "written in it count as read (prompt_literal) and need no assumptions entry.",
+)
+@click.option(
+    "--upgrade",
+    is_flag=True,
+    default=False,
+    help="Rewrite the file's schema_version to the current one, in place.",
+)
+def validate(config_path, prompt_path, upgrade):
     """Validate a config file without running it.
 
     Automatically detects calibration configs (those with a 'calibration'
     section) and validates the calibration-specific fields as well.
 
+    Warns about every parameter set to a non-default value that the
+    `assumptions` block does not declare.
+
     Prints validation result as JSON to stdout.
     """
+    from . import schema_version
+    from .assumptions import prompt_literals
     from .config import load_config, validate_calibration_config, validate_config
+
+    upgraded = None
+    if upgrade:
+        try:
+            upgraded = schema_version.upgrade_file(config_path)
+        except Exception as e:
+            _error_json("CONFIG_LOAD_ERROR", f"Could not upgrade the config: {e}")
 
     try:
         config = load_config(config_path)
     except Exception as e:
         _error_json("CONFIG_LOAD_ERROR", str(e))
 
+    literals = None
+    if prompt_path is not None:
+        with open(prompt_path) as f:
+            literals = prompt_literals(f.read())
+
     if "calibration" in config:
-        result = validate_calibration_config(config)
+        result = validate_calibration_config(config, prompt_literals=literals)
     else:
-        result = validate_config(config)
+        result = validate_config(config, prompt_literals=literals)
+    if upgraded is not None:
+        result["upgraded"] = upgraded
     _print_json(result)
 
     if not result["valid"]:
@@ -656,7 +689,9 @@ def compare(bundles, metrics, variables, names, precision, raw, baseline):
       epydemix compare *.epx -m attack_rate,peak,total_deaths,days_over:500
       epydemix compare baseline.epx early.epx -n Baseline,Early -b Baseline
     """
+    from ..io.bundle import load_bundle
     from ..io.inspect import compare_bundles, compare_deltas, round_comparison
+    from .assumptions import compare as compare_assumptions
 
     # Parse names
     if names:
@@ -698,6 +733,13 @@ def compare(bundles, metrics, variables, names, precision, raw, baseline):
         deltas, delta_errors = compare_deltas(result, baseline, errors)
         result["_deltas_vs_" + baseline] = deltas
         errors["_deltas_vs_" + baseline] = delta_errors
+
+    # Assumption differences come first: they explain the metric deltas.
+    differences = compare_assumptions(
+        {name: load_bundle(path) for name, path in bundle_map.items()}
+    )
+    result = {"_assumptions": differences, **result}
+    errors = {"_assumptions": {}, **errors}
 
     if rounded:
         _print_json(round_comparison(result, errors))

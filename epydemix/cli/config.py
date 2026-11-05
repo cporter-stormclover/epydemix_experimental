@@ -12,6 +12,8 @@ import numpy as np
 
 from ..model.epimodel import EpiModel
 from ..model.predefined_models import SUPPORTED_MODELS, load_predefined_model
+from . import assumptions as _assumptions
+from . import schema_version as _schema_version
 
 # Default simulation counts when not specified in config
 DEFAULT_N_SIMULATIONS = 100
@@ -60,12 +62,20 @@ def _deep_merge(base: Dict, overlay: Dict) -> Dict:
     - All other types (lists, scalars) in *overlay* replace the base value.
 
     This means lists like ``overrides`` and ``interventions`` are replaced
-    wholesale, giving the overlay full control.
+    wholesale, giving the overlay full control. The one exception is
+    ``assumptions``, whose entries are keyed by parameter: they are merged,
+    the overlay's entry winning for a parameter both declare.
     """
     result = copy.deepcopy(base)
     for key, value in overlay.items():
         if key in result and isinstance(result[key], dict) and isinstance(value, dict):
             result[key] = _deep_merge(result[key], value)
+        elif (
+            key == "assumptions"
+            and isinstance(result.get(key), list)
+            and isinstance(value, list)
+        ):
+            result[key] = _assumptions.merge(result[key], copy.deepcopy(value))
         else:
             result[key] = copy.deepcopy(value)
     return result
@@ -549,14 +559,25 @@ def resolve_seed(sim_cfg: Dict[str, Any]) -> int:
     return int(seed)
 
 
-def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
+def validate_config(
+    config: Dict[str, Any], prompt_literals: Optional[Any] = None
+) -> Dict[str, Any]:
     """Validate a config dict and return structured errors/warnings.
+
+    Args:
+        config: The config.
+        prompt_literals: Numbers written in the prompt the config answers
+            (see :func:`epydemix.cli.assumptions.prompt_literals`). A parameter
+            set to one of them was read, not chosen, and needs no
+            ``assumptions`` entry.
 
     Returns:
         A dict with ``valid`` (bool), ``errors`` (list), ``warnings`` (list).
     """
     errors = []
     warnings = []
+    _schema_version.check(config, errors, warnings)
+    _assumptions.validate_block(config, errors)
 
     # Must have model section
     if "model" not in config:
@@ -656,9 +677,11 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
             errors.append(f"{value_label} {problem}")
 
     compartments = None
+    registry = None
     if model_type in SUPPORTED_MODELS:
         model = _build_predefined(model_type, model_cfg)
         if model is not None:
+            registry = model.parameter_registry
             compartments = list(model.compartments)
             _validate_predefined_parameters(model.parameter_registry, uses, errors)
             # A parameter set by neither the parameters section nor a prior
@@ -727,6 +750,12 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
                             f"initial_conditions[{comp!r}][{k!r}] must be a number"
                         )
         errors.extend(_check_ic_normalization(ic_cfg))
+
+    warnings.extend(
+        _assumptions.check_declared(
+            uses, config, registry, prompt_literals, no_value=_NO_VALUE
+        )
+    )
 
     return {
         "valid": len(errors) == 0,
@@ -1305,7 +1334,9 @@ def _resolve_distance_function(name: str) -> Callable:
     return available[name]
 
 
-def validate_calibration_config(config: Dict[str, Any]) -> Dict[str, Any]:
+def validate_calibration_config(
+    config: Dict[str, Any], prompt_literals: Optional[Any] = None
+) -> Dict[str, Any]:
     """Validate a calibration config.  Returns ``{valid, errors, warnings}``."""
     errors = []
     warnings = []
@@ -1355,7 +1386,7 @@ def validate_calibration_config(config: Dict[str, Any]) -> Dict[str, Any]:
         )
 
     # Also run base simulation config validation
-    base_result = validate_config(config)
+    base_result = validate_config(config, prompt_literals=prompt_literals)
     errors.extend(base_result["errors"])
     warnings.extend(base_result["warnings"])
 

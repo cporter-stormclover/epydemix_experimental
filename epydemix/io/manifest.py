@@ -12,7 +12,13 @@ import numpy as np
 # and are version 1.
 #   2: ``schema_version`` and a unique bundle ``id``; ``files.summary``
 #      (summary.json) in bundles written by the CLI.
-MANIFEST_SCHEMA_VERSION = 2
+#   3: ``assumptions``, copied from the config.
+MANIFEST_SCHEMA_VERSION = 3
+
+
+def _add_assumptions(manifest: Dict[str, Any], config: Optional[Dict]) -> None:
+    if config and config.get("assumptions"):
+        manifest["assumptions"] = config["assumptions"]
 
 
 def _get_version() -> str:
@@ -144,6 +150,7 @@ def build_simulation_manifest(
             "path": "config.yaml",
             "description": "The configuration that produced this run.",
         }
+    _add_assumptions(manifest, config)
 
     # Add file sizes if available
     if file_sizes:
@@ -261,6 +268,7 @@ def build_calibration_manifest(
             "path": "config.yaml",
             "description": "The configuration that produced this run.",
         }
+    _add_assumptions(manifest, config)
 
     if file_sizes:
         for key, size in file_sizes.items():

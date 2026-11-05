@@ -36,7 +36,7 @@ BASE = {
     },
 }
 
-# Scenario name -> vaccination_rate (per day): none, and one value inside each
+# Scenario name -> vaccination_rate (per day): none, and the midpoint of each
 # qualitative band of the registry.
 SCENARIOS = {
     "no_vaccination": 0.0,
@@ -45,20 +45,72 @@ SCENARIOS = {
     "high": 0.0115,
 }
 
+# The basis of every value the base config sets (the prompt gives R0 = 2.5, a
+# 4-day latent period, a 5-day infectious period and an 80% efficacy).
+BASE_ASSUMPTIONS = [
+    {
+        "parameter": "transmission_rate",
+        "value": 0.036,
+        "basis": "derived",
+        "rationale": "R0 = 2.5 * recovery_rate / rho(C), rho = 13.9",
+    },
+    {
+        "parameter": "incubation_rate",
+        "value": 0.25,
+        "basis": "derived",
+        "rationale": "4-day latent period",
+    },
+    {
+        "parameter": "recovery_rate",
+        "value": 0.2,
+        "basis": "derived",
+        "rationale": "5-day infectious period",
+    },
+    {
+        "parameter": "vaccine_efficacy",
+        "value": 0.8,
+        "basis": "prompt_literal",
+        "rationale": "80% efficacy",
+    },
+]
 
-def write_case_study(directory, n_simulations=None):
-    """Write base.yaml and one overlay per scenario; return {scenario: path}."""
+
+def _scenario_assumption(name, rate):
+    if name == "no_vaccination":
+        return {
+            "parameter": "vaccination_rate",
+            "value": rate,
+            "basis": "prompt_literal",
+            "rationale": "no campaign",
+        }
+    return {
+        "parameter": "vaccination_rate",
+        "value": rate,
+        "basis": "agent_choice",
+        "rationale": f"midpoint of the '{name}' band",
+    }
+
+
+def write_case_study(directory, n_simulations=None, declare=False):
+    """Write base.yaml and one overlay per scenario; return {scenario: path}.
+
+    With ``declare``, the configs carry an ``assumptions`` block for every
+    value they set.
+    """
     base = yaml.safe_load(yaml.safe_dump(BASE))
     if n_simulations is not None:
         base["simulation"]["n_simulations"] = n_simulations
+    if declare:
+        base["assumptions"] = BASE_ASSUMPTIONS
     with open(directory / "base.yaml", "w") as f:
         yaml.safe_dump(base, f, sort_keys=False)
     paths = {}
     for name, rate in SCENARIOS.items():
+        overlay = {"base": "base.yaml", "parameters": {"vaccination_rate": rate}}
+        if declare:
+            overlay["assumptions"] = [_scenario_assumption(name, rate)]
         path = directory / f"{name}.yaml"
         with open(path, "w") as f:
-            yaml.safe_dump(
-                {"base": "base.yaml", "parameters": {"vaccination_rate": rate}}, f
-            )
+            yaml.safe_dump(overlay, f)
         paths[name] = path
     return paths

@@ -290,7 +290,11 @@ overrides:
 
 **Required sections:** `model`, `simulation` (with `start_date` and `end_date`).
 
-**Optional sections:** `parameters` (defaults used if omitted), `population`, `initial_conditions`, `interventions`, `overrides`, `base`.
+**Optional sections:** `parameters` (defaults used if omitted), `population`, `initial_conditions`, `interventions`, `overrides`, `base`, `assumptions`, `schema_version` (current 2; older accepted; `validate --upgrade` sets it).
+
+### Assumptions
+
+`assumptions:` lists `{parameter, value, basis, rationale}` (see the case study); `basis` is `prompt_literal`, `literature_default`, `agent_choice` or `derived`. `validate` warns about each undeclared non-default value (`--prompt FILE` exempts numbers in the prompt). Entries reach the manifest, merge by parameter across overlays, and `compare` shows their differences first. "Low"/"high" map to the cited `x-qualitative-bands` of `epydemix schema`. **For any value you choose rather than read, add an `assumptions` entry with basis `agent_choice`, then rerun the scenario at the band's lower and upper edge and state whether the ranking of strategies changes.**
 
 **Simulation timestep (`dt`).** The `simulation.dt` field controls the integration timestep in days. The default is `1.0` (one day). Smaller values (e.g. `0.5`, `0.25`) increase accuracy at the cost of speed — this matters for models with fast dynamics (short latent periods, high transmission rates) where daily steps can overshoot transitions. Larger values (e.g. `2.0`) are rarely useful and risk numerical instability. The timestep applies uniformly to `run`, `calibrate`, and `project` commands. Output is always resampled to daily resolution regardless of `dt`, so the choice of timestep does not affect the shape of the output DataFrame — only the accuracy of the underlying integration.
 
@@ -1168,10 +1172,16 @@ parameters: {transmission_rate: 0.036, incubation_rate: 0.25, recovery_rate: 0.2
 simulation: {start_date: "2026-10-01", end_date: "2027-03-31", n_simulations: 100}
 initial_conditions: {Susceptible: 0.9999, Exposed: 0.00005, Infected: 0.00005,
                      Recovered: 0.0, Vaccinated: 0.0}
+assumptions:
+  - {parameter: transmission_rate, value: 0.036, basis: derived, rationale: "R0 2.5"}
+  - {parameter: incubation_rate, value: 0.25, basis: derived, rationale: "4-day latency"}
+  - {parameter: recovery_rate, value: 0.2, basis: derived, rationale: "5-day infectivity"}
+  - {parameter: vaccine_efficacy, value: 0.8, basis: prompt_literal, rationale: "80%"}
 EOF
 for s in no_vaccination:0.0 low:0.0015 moderate:0.0045 high:0.0115; do
-  printf 'base: base.yaml\nparameters: {vaccination_rate: %s}\n' "${s#*:}" > "${s%%:*}.yaml"
-  epydemix run "${s%%:*}.yaml" -o "${s%%:*}.epx"
+  n=${s%%:*}; v=${s#*:}
+  printf 'base: base.yaml\nparameters: {vaccination_rate: %s}\nassumptions:\n- {parameter: vaccination_rate, value: %s, basis: agent_choice, rationale: "%s"}\n' $v $v $n > $n.yaml
+  epydemix validate $n.yaml && epydemix run $n.yaml -o $n.epx
 done
 python -c "import json; print(json.load(open('high.epx/summary.json'))['variables']['Infected_total']['peak'])"
 ```

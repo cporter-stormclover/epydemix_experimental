@@ -269,6 +269,44 @@ def waning_immunity_specs(waning_rate: float = 1.0 / 365) -> list:
     ]
 
 
+# Qualitative vaccination paces. Paltiel et al. (2021) model the pace of a
+# COVID-19 vaccination campaign as the share of the population vaccinated per
+# day: base case 0.5%/day (the daily share reached in US influenza vaccination
+# campaigns), range 0.1-2.0%/day, with ~0.1%/day the pace of the early US
+# rollout and ~1%/day the pace hoped for. Their pace counts doses against the
+# whole population; vaccination_rate applies to the susceptible compartment,
+# so the two coincide only while nearly everyone is susceptible.
+_PALTIEL_2021 = (
+    "Paltiel AD, Schwartz JL, Zheng A, Walensky RP. Clinical outcomes of a "
+    "COVID-19 vaccine: implementation over efficacy. Health Affairs "
+    "2021;40(1):42-52. doi:10.1377/hlthaff.2020.02054"
+)
+VACCINATION_RATE_BANDS = {
+    "low": {
+        "min": 0.001,
+        "max": 0.002,
+        "source": _PALTIEL_2021,
+        "note": "~0.1%/day: the early US COVID-19 rollout, the low end of the "
+        "range modelled. Band edges are this package's reading of the source.",
+    },
+    "moderate": {
+        "min": 0.003,
+        "max": 0.006,
+        "source": _PALTIEL_2021,
+        "note": "0.5%/day base case, the daily share reached in US influenza "
+        "vaccination. Band edges are this package's reading of the source.",
+    },
+    "high": {
+        "min": 0.008,
+        "max": 0.015,
+        "source": _PALTIEL_2021,
+        "note": "~1%/day, the pace hoped for in the US COVID-19 rollout, within "
+        "the 2%/day upper end of the range modelled. Band edges are this "
+        "package's reading of the source.",
+    },
+}
+
+
 def vaccination_specs(
     vaccination_rate: float = 0.01,
     vaccine_efficacy: float = 0.9,
@@ -288,6 +326,7 @@ def vaccination_specs(
             units="1/days",
             precision=2,
             tags=["vaccination", "module"],
+            qualitative_bands=VACCINATION_RATE_BANDS,
         ),
         ParameterSpec(
             name="vaccine_efficacy",
