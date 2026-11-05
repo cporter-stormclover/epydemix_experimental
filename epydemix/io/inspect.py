@@ -4,6 +4,8 @@ Each function reads from the on-disk Parquet files, computes an answer,
 and returns a compact dictionary suitable for JSON serialization to stdout.
 """
 
+import json
+import math
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -11,12 +13,16 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 from pandas.tseries.frequencies import to_offset
 
+from . import precision as _precision
 from .bundle import load_bundle, load_bundle_dataframe
+
+REPORT_MODES = ("raw", "rounded")
 
 
 def inspect_bundle(
     path: str,
     command: str,
+    report: str = "raw",
     **kwargs,
 ) -> Dict[str, Any]:
     """Dispatch an inspect command against a bundle.
@@ -25,6 +31,11 @@ def inspect_bundle(
         path: Path to the .epx bundle directory.
         command: One of ``"manifest"``, ``"quantiles"``, ``"summary"``,
             ``"peak"``, ``"posterior"``, ``"fit"``.
+        report: ``"raw"`` (default) returns full-precision floats.
+            ``"rounded"`` rounds every statistic to the first significant
+            digit of its bootstrap standard error and reports peak dates as an
+            interval when their 90% interval spans more than one day (the
+            CLI's default). The manifest is never rounded.
         **kwargs: Command-specific arguments.
 
     Returns:
@@ -44,7 +55,12 @@ def inspect_bundle(
             f"Unknown inspect command '{command}'. Available: {list(commands.keys())}"
         )
 
-    return commands[command](path, **kwargs)
+    if report not in REPORT_MODES:
+        raise ValueError(f"report must be one of {REPORT_MODES}, got {report!r}")
+    if report == "raw" or command == "manifest":
+        return commands[command](path, **kwargs)
+    result, se = commands[command](path, with_se=True, **kwargs)
+    return _precision.add_reported_dates(_precision.round_by_se(result, se))
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +240,45 @@ def _value_quantiles(
     return {_quantile_key(q, key_format): float(values.quantile(q)) for q in quantiles}
 
 
+def _value_quantiles_se(
+    values: pd.Series,
+    quantiles=SUMMARY_QUANTILES,
+    key_format: str = "plain",
+) -> Dict[str, float]:
+    """Bootstrap standard errors matching :func:`_value_quantiles`."""
+    ses = _precision.bootstrap_se(values.values, list(quantiles))
+    return {_quantile_key(q, key_format): float(se) for q, se in zip(quantiles, ses)}
+
+
+def _series_quantiles(pivoted: pd.DataFrame, quantiles, with_se: bool):
+    """Quantiles across simulations at each time step, and their errors."""
+    values = {
+        str(q): [float(v) for v in pivoted.quantile(q, axis=1).values]
+        for q in quantiles
+    }
+    if not with_se:
+        return values, None
+    ses = _precision.bootstrap_se_series(pivoted.values, list(quantiles))
+    return values, {str(q): [float(v) for v in ses[q]] for q in quantiles}
+
+
+def _cached_se(path: str, var: str, stat: str) -> Optional[Dict[str, float]]:
+    """Standard errors cached in summary.json, keyed like inspect's output.
+
+    Only valid for statistics over the whole simulation window; callers do
+    not use it when a time slice is requested.
+    """
+    summary_path = Path(path) / "summary.json"
+    if not summary_path.exists():
+        return None
+    try:
+        with open(summary_path) as f:
+            cached = json.load(f)["mc_se"]["variables"][var][stat]
+    except (KeyError, TypeError, ValueError):
+        return None
+    return {_quantile_key(float(q), "legacy"): v for q, v in cached.items()}
+
+
 def _date_quantiles(
     dates: pd.Series,
     quantiles=SUMMARY_QUANTILES,
@@ -264,8 +319,9 @@ def _cmd_quantiles(
     start: Optional[str] = None,
     end: Optional[str] = None,
     resample: Optional[str] = None,
+    with_se: bool = False,
     **kwargs,
-) -> Dict[str, Any]:
+):
     """Compute quantiles across simulations for selected variables.
 
     Args:
@@ -274,6 +330,7 @@ def _cmd_quantiles(
         start: Start date for time slice.
         end: End date for time slice.
         resample: Temporal resampling frequency (e.g. 'W', 'M').
+        with_se: Also return the bootstrap standard error of every number.
     """
     if quantiles is None:
         quantiles = [0.05, 0.25, 0.5, 0.75, 0.95]
@@ -292,16 +349,13 @@ def _cmd_quantiles(
     result: Dict[str, Any] = {
         "dates": [str(d)[:10] for d in dates],
     }
+    se: Dict[str, Any] = {}
 
     for var in variables:
         pivoted = df.pivot(index="date", columns="sim_id", values=var)
-        var_result = {}
-        for q in quantiles:
-            vals = pivoted.quantile(q, axis=1).values
-            var_result[str(q)] = [float(v) for v in vals]
-        result[var] = var_result
+        result[var], se[var] = _series_quantiles(pivoted, quantiles, with_se)
 
-    return result
+    return (result, se) if with_se else result
 
 
 def _cmd_summary(
@@ -309,8 +363,9 @@ def _cmd_summary(
     variables: Optional[List[str]] = None,
     start: Optional[str] = None,
     end: Optional[str] = None,
+    with_se: bool = False,
     **kwargs,
-) -> Dict[str, Any]:
+):
     """Compute summary statistics for selected variables.
 
     Returns peak date/value, cumulative totals, and final state
@@ -321,8 +376,10 @@ def _cmd_summary(
 
     df, _ = _load_variables(path, manifest, variables)
     df = _apply_time_slice(df, start, end)
+    whole_window = start is None and end is None
 
     result = {}
+    se = {}
     for var in variables:
         pivoted = df.pivot(index="date", columns="sim_id", values=var)
         stats = _per_simulation_stats(pivoted)
@@ -339,9 +396,27 @@ def _cmd_summary(
                 "0.50": float(pivoted.quantile(0.5, axis=1).mean()),
             },
         }
+        if with_se:
+            dates = _date_quantiles(stats["peak_date"], key_format="legacy")
+            var_summary["peak_date_reported"] = _precision.reported_date(
+                dates["0.05"], dates["0.50"], dates["0.95"]
+            )
+            cached = {
+                stat: _cached_se(path, var, stat) if whole_window else None
+                for stat in ("peak", "final")
+            }
+            se[var] = {
+                "peak_value": cached["peak"]
+                or _value_quantiles_se(stats["peak"], key_format="legacy"),
+                "final_value": cached["final"]
+                or _value_quantiles_se(stats["final"], key_format="legacy"),
+                "mean_across_time": {
+                    "0.50": _precision.bootstrap_se_mean_of_median(pivoted.values)
+                },
+            }
         result[var] = var_summary
 
-    return result
+    return (result, se) if with_se else result
 
 
 def _cmd_peak(
@@ -349,16 +424,19 @@ def _cmd_peak(
     variables: Optional[List[str]] = None,
     start: Optional[str] = None,
     end: Optional[str] = None,
+    with_se: bool = False,
     **kwargs,
-) -> Dict[str, Any]:
+):
     """Find peak timing and magnitude for selected variables."""
     manifest = load_bundle(path)
     variables = _resolve_variables(manifest, variables)
 
     df, _ = _load_variables(path, manifest, variables)
     df = _apply_time_slice(df, start, end)
+    whole_window = start is None and end is None
 
     result = {}
+    se = {}
     for var in variables:
         pivoted = df.pivot(index="date", columns="sim_id", values=var)
         stats = _per_simulation_stats(pivoted)
@@ -366,15 +444,46 @@ def _cmd_peak(
             "peak_date": _date_quantiles(stats["peak_date"], key_format="legacy"),
             "peak_value": _value_quantiles(stats["peak"], key_format="legacy"),
         }
+        if with_se:
+            cached = _cached_se(path, var, "peak") if whole_window else None
+            se[var] = {
+                "peak_value": cached
+                or _value_quantiles_se(stats["peak"], key_format="legacy")
+            }
 
-    return result
+    return (result, se) if with_se else result
+
+
+def _posterior_stats(vals: pd.Series, with_se: bool):
+    """Mean, standard deviation, 95% interval and median of a sample."""
+    stats = {
+        "mean": float(vals.mean()),
+        "std": float(vals.std()),
+        "ci95": [
+            float(vals.quantile(0.025)),
+            float(vals.quantile(0.975)),
+        ],
+        "median": float(vals.median()),
+    }
+    if not with_se:
+        return stats, None
+    x = vals.values
+    q_se = _precision.bootstrap_se(x, [0.025, 0.5, 0.975])
+    se = {
+        "mean": _precision.bootstrap_se_statistic(x, lambda b: b.mean(axis=1)),
+        "std": _precision.bootstrap_se_statistic(x, lambda b: b.std(axis=1, ddof=1)),
+        "ci95": [float(q_se[0]), float(q_se[2])],
+        "median": float(q_se[1]),
+    }
+    return stats, se
 
 
 def _cmd_posterior(
     path: str,
     generation: Optional[int] = None,
+    with_se: bool = False,
     **kwargs,
-) -> Dict[str, Any]:
+):
     """Summarize posterior distributions from calibration results."""
     df = load_bundle_dataframe(path, "posterior")
 
@@ -387,27 +496,20 @@ def _cmd_posterior(
 
     param_cols = [c for c in df.columns if c != "generation"]
     result = {}
+    se = {}
     for col in param_cols:
-        vals = df[col].dropna()
-        result[col] = {
-            "mean": float(vals.mean()),
-            "std": float(vals.std()),
-            "ci95": [
-                float(vals.quantile(0.025)),
-                float(vals.quantile(0.975)),
-            ],
-            "median": float(vals.median()),
-        }
+        result[col], se[col] = _posterior_stats(df[col].dropna(), with_se)
 
-    return result
+    return (result, se) if with_se else result
 
 
 def _cmd_fit(
     path: str,
     variables: Optional[List[str]] = None,
     quantiles: Optional[List[float]] = None,
+    with_se: bool = False,
     **kwargs,
-) -> Dict[str, Any]:
+):
     """Get calibration fit trajectories (observed vs. simulated quantiles).
 
     This reads the trajectories from the calibration bundle and computes
@@ -458,6 +560,7 @@ def _cmd_fit(
         return var  # will produce empty df → skipped below
 
     result: Dict[str, Any] = {}
+    se: Dict[str, Any] = {}
     for var in variables:
         traj_key = _resolve_traj_key(var)
         var_df = traj_df[traj_df["variable"] == traj_key]
@@ -465,11 +568,7 @@ def _cmd_fit(
             continue
 
         pivoted = var_df.pivot(index="timestep", columns="sim_id", values="value")
-        var_result = {}
-        for q in quantiles:
-            vals = pivoted.quantile(q, axis=1).values
-            var_result[str(q)] = [float(v) for v in vals]
-        result[var] = var_result
+        result[var], se[var] = _series_quantiles(pivoted, quantiles, with_se)
 
     if observed is not None:
         # observed_data.parquet is in long format: [timestep, variable, value].
@@ -480,7 +579,7 @@ def _cmd_fit(
             obs_dict[str(var_name)] = [float(v) for v in grp_sorted["value"].values]
         result["observed"] = obs_dict
 
-    return result
+    return (result, se) if with_se else result
 
 
 # ---------------------------------------------------------------------------
@@ -516,19 +615,27 @@ def _legacy_attack_rate_samples(comp) -> Optional[pd.Series]:
     return 1.0 - last_day / first_day
 
 
+def _sampled_metric(samples: pd.Series, **extra) -> Dict[str, Any]:
+    """Median and 90% interval of a per-simulation metric.
+
+    The samples travel with the result under ``_samples`` so that
+    :func:`compare_bundles` can compute bootstrap errors; it removes them
+    before returning.
+    """
+    return {
+        "median": float(samples.median()),
+        "ci90": [float(samples.quantile(0.05)), float(samples.quantile(0.95))],
+        **extra,
+        "_samples": samples,
+    }
+
+
 def _metric_attack_rate(comp, manifest, **kw):
     """Fraction of population ever infected (recovered + dead)."""
     attack = _legacy_attack_rate_samples(comp)
     if attack is None:
         return {"value": None, "note": "no susceptible compartment found"}
-    return {
-        "median": float(attack.median()) * 100,
-        "ci90": [
-            float(attack.quantile(0.05)) * 100,
-            float(attack.quantile(0.95)) * 100,
-        ],
-        "units": "percent",
-    }
+    return _sampled_metric(attack * 100, units="percent")
 
 
 def _metric_peak(comp, manifest, variable=None, **kw):
@@ -537,11 +644,7 @@ def _metric_peak(comp, manifest, variable=None, **kw):
     if var not in comp.columns:
         return {"value": None, "note": f"{var} not found"}
     peaks = comp.groupby("sim_id")[var].max()
-    return {
-        "median": float(peaks.median()),
-        "ci90": [float(peaks.quantile(0.05)), float(peaks.quantile(0.95))],
-        "variable": var,
-    }
+    return _sampled_metric(peaks, variable=var)
 
 
 def _metric_peak_date(comp, manifest, variable=None, **kw):
@@ -576,11 +679,7 @@ def _metric_total_deaths(comp, manifest, **kw):
     if d_col is None:
         return {"value": None, "note": "no death compartment found"}
     final = comp.groupby("sim_id")[d_col].last()
-    return {
-        "median": float(final.median()),
-        "ci90": [float(final.quantile(0.05)), float(final.quantile(0.95))],
-        "variable": d_col,
-    }
+    return _sampled_metric(final, variable=d_col)
 
 
 def _metric_days_over(comp, manifest, variable=None, threshold=None, **kw):
@@ -606,11 +705,7 @@ def _metric_final_value(comp, manifest, variable=None, **kw):
     if var not in comp.columns:
         return {"value": None, "note": f"{var} not found"}
     final = comp.groupby("sim_id")[var].last()
-    return {
-        "median": float(final.median()),
-        "ci90": [float(final.quantile(0.05)), float(final.quantile(0.95))],
-        "variable": var,
-    }
+    return _sampled_metric(final, variable=var)
 
 
 def _default_var(comp, prefix="I"):
@@ -635,11 +730,21 @@ COMPARE_METRICS = {
 }
 
 
+def _metric_se(metric: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Bootstrap errors of a metric's median and 90% interval."""
+    samples = metric.get("_samples")
+    if samples is None:
+        return None
+    se = _precision.bootstrap_se(samples.values, [0.05, 0.5, 0.95])
+    return {"median": float(se[1]), "ci90": [float(se[0]), float(se[2])]}
+
+
 def compare_bundles(
     bundles: Dict[str, str],
     metrics: Optional[List[str]] = None,
     variables: Optional[List[str]] = None,
-) -> Dict[str, Any]:
+    with_se: bool = False,
+):
     """Compare multiple bundles on a set of metrics.
 
     Args:
@@ -651,9 +756,12 @@ def compare_bundles(
         variables: Optional list of variable names to pass to variable-specific
             metrics (peak, peak_date, final_value).  If not provided, metrics
             will auto-detect the most relevant variable.
+        with_se: Also return the bootstrap standard errors of every median
+            and interval bound, as a second dict of the same shape.
 
     Returns:
-        A dict with structure ``{scenario_name: {metric_name: result}}``.
+        A dict with structure ``{scenario_name: {metric_name: result}}``,
+        or ``(result, standard_errors)`` when ``with_se`` is true.
     """
     if metrics is None:
         metrics = ["attack_rate", "peak", "peak_date", "total_deaths"]
@@ -675,6 +783,7 @@ def compare_bundles(
             )
 
     result = {}
+    errors = {}
     for scenario_name, bundle_path in bundles.items():
         manifest = load_bundle(bundle_path)
         comp = load_bundle_dataframe(bundle_path, "compartments")
@@ -694,6 +803,7 @@ def compare_bundles(
             )
 
         scenario_result = {}
+        scenario_errors = {}
         for metric_name, metric_param in parsed_metrics:
             fn = COMPARE_METRICS[metric_name]
             kwargs = {}
@@ -701,8 +811,88 @@ def compare_bundles(
                 kwargs["variable"] = variables[0]
             if metric_param is not None:
                 kwargs["threshold"] = metric_param
-            scenario_result[metric_name] = fn(comp, manifest, **kwargs)
+            value = fn(comp, manifest, **kwargs)
+            se = _metric_se(value) if with_se else None
+            if se is not None:
+                scenario_errors[metric_name] = se
+            value.pop("_samples", None)
+            scenario_result[metric_name] = value
 
         result[scenario_name] = scenario_result
+        errors[scenario_name] = scenario_errors
 
-    return result
+    return (result, errors) if with_se else result
+
+
+def _metric_number(metric: Dict[str, Any]) -> Tuple[Optional[str], Any]:
+    """The field of a metric that deltas are computed on, and its value."""
+    for field in ("median", "value"):
+        if field in metric:
+            value = metric[field]
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                return field, value
+            return field, None
+    return None, None
+
+
+def compare_deltas(
+    result: Dict[str, Any],
+    baseline: str,
+    errors: Optional[Dict[str, Any]] = None,
+):
+    """Differences of every scenario from a baseline (scenario minus baseline).
+
+    Deltas are taken on each metric's median (or value). With ``errors``
+    (from ``compare_bundles(..., with_se=True)``), also returns the standard
+    error of each delta, combining the two scenarios' errors in quadrature.
+
+    Returns:
+        ``{scenario: {metric: delta}}``, or ``(deltas, delta_errors)`` when
+        ``errors`` is given.
+    """
+    if baseline not in result:
+        raise KeyError(
+            f"Baseline '{baseline}' not found. Available: {list(result.keys())}"
+        )
+    base_data = result[baseline]
+    deltas = {}
+    delta_errors = {}
+    for scenario, metrics_data in result.items():
+        if scenario == baseline or scenario.startswith("_"):
+            continue
+        scenario_delta = {}
+        scenario_error = {}
+        for metric_name, metric_val in metrics_data.items():
+            base_val = base_data.get(metric_name, {})
+            field, sv = _metric_number(metric_val)
+            base_field, bv = _metric_number(base_val)
+            if field is None or field != base_field or sv is None or bv is None:
+                continue
+            scenario_delta[metric_name] = sv - bv
+            if errors is not None and field == "median":
+                se_s = errors.get(scenario, {}).get(metric_name, {}).get("median")
+                se_b = errors.get(baseline, {}).get(metric_name, {}).get("median")
+                if se_s is not None and se_b is not None:
+                    scenario_error[metric_name] = math.sqrt(se_s**2 + se_b**2)
+        deltas[scenario] = scenario_delta
+        delta_errors[scenario] = scenario_error
+    return (deltas, delta_errors) if errors is not None else deltas
+
+
+def round_comparison(result: Dict[str, Any], errors: Dict[str, Any]) -> Dict[str, Any]:
+    """Round a comparison (with its deltas) to its bootstrap errors.
+
+    Peak dates gain a ``reported`` field: the median date, or the 90%
+    interval when it spans more than one day.
+    """
+    rounded = _precision.round_by_se(result, errors)
+    for scenario, metrics_data in rounded.items():
+        if scenario.startswith("_") or not isinstance(metrics_data, dict):
+            continue
+        peak_date = metrics_data.get("peak_date")
+        if isinstance(peak_date, dict) and peak_date.get("ci90"):
+            lo, hi = peak_date["ci90"]
+            peak_date["reported"] = _precision.reported_date(
+                lo, peak_date.get("median"), hi
+            )
+    return rounded

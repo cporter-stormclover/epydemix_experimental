@@ -27,6 +27,7 @@ def sir_specs(
             min=0,
             max=10,
             units="1/days",
+            precision=2,
             tags=["transmission", "SIR"],
         ),
         ParameterSpec(
@@ -41,6 +42,7 @@ def sir_specs(
             min=0,
             max=10,
             units="1/days",
+            precision=2,
             tags=["recovery", "SIR"],
         ),
     ]
@@ -65,6 +67,7 @@ def seir_specs(
             min=0,
             max=10,
             units="1/days",
+            precision=2,
             tags=["transmission", "SEIR"],
         ),
         ParameterSpec(
@@ -79,6 +82,7 @@ def seir_specs(
             min=0,
             max=10,
             units="1/days",
+            precision=2,
             tags=["incubation", "SEIR"],
         ),
         ParameterSpec(
@@ -93,6 +97,7 @@ def seir_specs(
             min=0,
             max=10,
             units="1/days",
+            precision=2,
             tags=["recovery", "SEIR"],
         ),
     ]
@@ -117,6 +122,7 @@ def sis_specs(
             min=0,
             max=10,
             units="1/days",
+            precision=2,
             tags=["transmission", "SIS"],
         ),
         ParameterSpec(
@@ -131,6 +137,7 @@ def sis_specs(
             min=0,
             max=10,
             units="1/days",
+            precision=2,
             tags=["recovery", "SIS"],
         ),
     ]
@@ -159,6 +166,7 @@ def seiar_specs(
             min=0,
             max=10,
             units="1/days",
+            precision=2,
             tags=["transmission", "SEIAR"],
         ),
         ParameterSpec(
@@ -174,6 +182,7 @@ def seiar_specs(
             min=0,
             max=10,
             units="1/days",
+            precision=2,
             tags=["incubation", "SEIAR"],
         ),
         ParameterSpec(
@@ -187,6 +196,7 @@ def seiar_specs(
             min=0,
             max=10,
             units="1/days",
+            precision=2,
             tags=["recovery", "SEIAR"],
         ),
         ParameterSpec(
@@ -201,6 +211,7 @@ def seiar_specs(
             min=0,
             max=1,
             units="dimensionless",
+            precision=2,
             tags=["SEIAR"],
         ),
         ParameterSpec(
@@ -215,6 +226,7 @@ def seiar_specs(
             min=0,
             max=10,
             units="1/days",
+            precision=2,
             tags=["recovery", "SEIAR"],
         ),
         ParameterSpec(
@@ -230,6 +242,7 @@ def seiar_specs(
             min=0,
             max=1,
             units="dimensionless",
+            precision=2,
             tags=["transmission", "SEIAR"],
         ),
     ]
@@ -250,6 +263,7 @@ def waning_immunity_specs(waning_rate: float = 1.0 / 365) -> list:
             min=0,
             max=1,
             units="1/days",
+            precision=2,
             tags=["waning", "module"],
         ),
     ]
@@ -272,6 +286,7 @@ def vaccination_specs(
             min=0,
             max=1,
             units="1/days",
+            precision=2,
             tags=["vaccination", "module"],
         ),
         ParameterSpec(
@@ -288,6 +303,7 @@ def vaccination_specs(
             min=0,
             max=1,
             units="dimensionless",
+            precision=2,
             tags=["vaccination", "module"],
         ),
     ]
@@ -315,6 +331,7 @@ def outcome_specs(
                 min=0,
                 max=1,
                 units="dimensionless",
+                precision=2,
                 tags=["outcome", "deaths", "module"],
             ),
         ]
@@ -333,6 +350,7 @@ def outcome_specs(
                 min=0,
                 max=1,
                 units="dimensionless",
+                precision=2,
                 tags=["outcome", "hospitalization", "module"],
             ),
             ParameterSpec(
@@ -346,6 +364,7 @@ def outcome_specs(
                 min=0,
                 max=10,
                 units="1/days",
+                precision=2,
                 tags=["outcome", "hospitalization", "module"],
             ),
         ]

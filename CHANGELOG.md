@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Added
 
 * `run`, `calibrate` and `project` write `summary.json` (peak, peak date and final value quantiles of every `_total` compartment, attack rate, posterior statistics) next to `manifest.json`; `epydemix.io` adds `build_summary`, `write_summary` and `load_summary`, and manifests gain `schema_version` and a bundle `id`.
+* `inspect`, `compare` and `summary.json` round every statistic to the first significant digit of its bootstrap standard error (200 resamples, cached in `summary.json`), report peak dates as an interval when their 90% interval spans more than a day, and take `--raw` for full precision (`--round N` still rounds to N decimals); `ParameterSpec` gains `precision` (significant figures), declared for every predefined parameter.
 
 ---
 

@@ -46,6 +46,9 @@ class ParameterSpec:
         depends_on: Names of other parameters this one is related to
             (e.g. ``recovery_rate`` depends on ``infectious_period``).
         tags: Freeform labels for filtering, e.g. ``["transmission", "SIR"]``.
+        precision: Significant figures a value of this parameter is known to.
+            Reports round the parameter (and quantities derived from it) to
+            this many figures. ``None`` leaves the choice to the reporter.
     """
 
     name: str
@@ -60,6 +63,7 @@ class ParameterSpec:
     shape: str = "scalar"
     depends_on: List[str] = field(default_factory=list)
     tags: List[str] = field(default_factory=list)
+    precision: Optional[int] = None
 
     def __post_init__(self) -> None:
         if self.kind not in PARAMETER_KINDS:
@@ -80,6 +84,15 @@ class ParameterSpec:
         if self.min is not None and self.max is not None and self.min > self.max:
             raise ValueError(
                 f"Parameter '{self.name}': min ({self.min}) > max ({self.max})"
+            )
+        if self.precision is not None and (
+            not isinstance(self.precision, int)
+            or isinstance(self.precision, bool)
+            or self.precision < 1
+        ):
+            raise ValueError(
+                f"Parameter '{self.name}': precision must be a positive integer "
+                f"(significant figures), got {self.precision!r}"
             )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -104,6 +117,8 @@ class ParameterSpec:
             d["depends_on"] = self.depends_on
         if self.tags:
             d["tags"] = self.tags
+        if self.precision is not None:
+            d["precision"] = self.precision
         return d
 
     @classmethod
@@ -122,6 +137,7 @@ class ParameterSpec:
             shape=d.get("shape", "scalar"),
             depends_on=d.get("depends_on", []),
             tags=d.get("tags", []),
+            precision=d.get("precision"),
         )
 
     def to_json_schema_property(self) -> Dict[str, Any]:
@@ -139,6 +155,8 @@ class ParameterSpec:
             prop["minimum"] = self.min
         if self.max is not None:
             prop["maximum"] = self.max
+        if self.precision is not None:
+            prop["x-precision"] = self.precision
         return prop
 
     def describe(self) -> str:

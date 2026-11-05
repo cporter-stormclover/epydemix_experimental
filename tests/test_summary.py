@@ -26,18 +26,32 @@ def _read(bundle, name):
 
 
 def _assert_matches_inspect(bundle):
-    """Every number in summary.json equals what inspect computes from Parquet."""
+    """Every number in summary.json equals what inspect computes from Parquet.
+
+    The rounded values match inspect's default (rounded) report and the
+    values under ``raw`` match ``inspect --raw``.
+    """
     summary = _read(bundle, "summary.json")
     variables = list(summary["variables"])
     assert variables, "a simulation bundle summarizes its _total compartments"
-    peak = inspect_bundle(bundle, "peak", variables=variables)
-    stats = inspect_bundle(bundle, "summary", variables=variables)
+    for report, tree, approx in (
+        ("rounded", summary["variables"], lambda v: v),
+        ("raw", summary["raw"]["variables"], pytest.approx),
+    ):
+        peak = inspect_bundle(bundle, "peak", variables=variables, report=report)
+        stats = inspect_bundle(bundle, "summary", variables=variables, report=report)
+        for var in variables:
+            got = tree[var]
+            for q, legacy in (("0.05", "0.05"), ("0.5", "0.50"), ("0.95", "0.95")):
+                assert got["peak"][q] == approx(peak[var]["peak_value"][legacy])
+                assert got["peak_date"][q] == peak[var]["peak_date"][legacy]
+                assert got["final"][q] == approx(stats[var]["final_value"][legacy])
+    rounded_peak = inspect_bundle(bundle, "peak", variables=variables, report="rounded")
     for var in variables:
-        got = summary["variables"][var]
-        for q, legacy in (("0.05", "0.05"), ("0.5", "0.50"), ("0.95", "0.95")):
-            assert got["peak"][q] == pytest.approx(peak[var]["peak_value"][legacy])
-            assert got["peak_date"][q] == peak[var]["peak_date"][legacy]
-            assert got["final"][q] == pytest.approx(stats[var]["final_value"][legacy])
+        assert (
+            summary["variables"][var]["peak_date"]["reported"]
+            == rounded_peak[var]["peak_date"]["reported"]
+        )
 
 
 class TestWrittenByEveryRunCommand:
@@ -46,8 +60,9 @@ class TestWrittenByEveryRunCommand:
         _invoke("run", _write_yaml(tmp_path, MINIMAL_CONFIG), "-o", out)
         manifest = _read(out, "manifest.json")
         assert manifest["files"]["summary"]["path"] == "summary.json"
+        assert manifest["files"]["summary"]["schema_version"] == 2
         summary = _read(out, "summary.json")
-        assert summary["schema_version"] == 1
+        assert summary["schema_version"] == 2
         assert summary["bundle_id"] == manifest["id"]
         assert summary["n_simulations"] == MINIMAL_CONFIG["simulation"]["n_simulations"]
         assert set(summary["variables"]) == {
@@ -70,12 +85,16 @@ class TestWrittenByEveryRunCommand:
     def test_calibrate_has_posterior_statistics(self, tmp_path):
         bundle = _run_calibration(tmp_path)
         summary = _read(bundle, "summary.json")
-        posterior = inspect_bundle(bundle, "posterior")
-        assert set(summary["posterior"]) == set(posterior)
-        for name, stats in posterior.items():
-            for key in ("mean", "median", "std"):
-                assert summary["posterior"][name][key] == pytest.approx(stats[key])
-            assert summary["posterior"][name]["ci95"] == pytest.approx(stats["ci95"])
+        for report, tree in (
+            ("rounded", summary["posterior"]),
+            ("raw", summary["raw"]["posterior"]),
+        ):
+            posterior = inspect_bundle(bundle, "posterior", report=report)
+            assert set(tree) == set(posterior)
+            for name, stats in posterior.items():
+                for key in ("mean", "median", "std"):
+                    assert tree[name][key] == pytest.approx(stats[key])
+                assert tree[name]["ci95"] == pytest.approx(stats["ci95"])
         assert "variables" not in summary  # no compartments.parquet
 
     def test_project(self, tmp_path):

@@ -357,8 +357,15 @@ def validate(config_path):
     "--round",
     "precision",
     type=int,
-    default=6,
-    help="Decimal precision for numeric output (default: 6).",
+    default=None,
+    help="Round every number to this many decimals instead of to its "
+    "Monte Carlo error.",
+)
+@click.option(
+    "--raw",
+    is_flag=True,
+    default=False,
+    help="Print full-precision floats (no rounding).",
 )
 @click.option(
     "--generation",
@@ -382,10 +389,16 @@ def inspect_cmd(
     end,
     resample,
     precision,
+    raw,
     generation,
     output_format,
 ):
     """Inspect an .epx result bundle.
+
+    Numbers are rounded to the first significant digit of their bootstrap
+    standard error, and a peak date whose 90% interval spans more than one
+    day is reported as that interval (`reported`). Copy them as printed.
+    `--raw` prints full precision; `--round N` rounds to N decimals instead.
 
     \b
     Commands:
@@ -421,8 +434,9 @@ def inspect_cmd(
     if generation is not None:
         kwargs["generation"] = generation
 
+    report = "raw" if (raw or precision is not None) else "rounded"
     try:
-        result = inspect_bundle(bundle_path, command, **kwargs)
+        result = inspect_bundle(bundle_path, command, report=report, **kwargs)
     except Exception as e:
         _error_json("INSPECT_ERROR", str(e))
 
@@ -431,6 +445,10 @@ def inspect_cmd(
         effective_precision = None if command == "manifest" else precision
         _print_json(result, precision=effective_precision)
     elif output_format in ("csv", "tsv"):
+        if precision is not None and command != "manifest":
+            from ..io.json_utils import _round_recursive
+
+            result = _round_recursive(result, precision)
         _print_tabular(result, output_format)
 
 
@@ -601,8 +619,15 @@ def defaults(disease):
     "--round",
     "precision",
     type=int,
-    default=6,
-    help="Decimal precision for numeric output (default: 6).",
+    default=None,
+    help="Round every number to this many decimals instead of to its "
+    "Monte Carlo error.",
+)
+@click.option(
+    "--raw",
+    is_flag=True,
+    default=False,
+    help="Print full-precision floats (no rounding).",
 )
 @click.option(
     "--baseline",
@@ -610,8 +635,11 @@ def defaults(disease):
     default=None,
     help="Scenario name to use as baseline for delta computation.",
 )
-def compare(bundles, metrics, variables, names, precision, baseline):
+def compare(bundles, metrics, variables, names, precision, raw, baseline):
     """Compare multiple .epx bundles on standard metrics.
+
+    Medians, intervals and deltas are rounded to their bootstrap standard
+    error; `--raw` prints full precision, `--round N` rounds to N decimals.
 
     \b
     Built-in metrics:
@@ -628,7 +656,7 @@ def compare(bundles, metrics, variables, names, precision, baseline):
       epydemix compare *.epx -m attack_rate,peak,total_deaths,days_over:500
       epydemix compare baseline.epx early.epx -n Baseline,Early -b Baseline
     """
-    from ..io.inspect import compare_bundles
+    from ..io.inspect import compare_bundles, compare_deltas, round_comparison
 
     # Parse names
     if names:
@@ -647,57 +675,34 @@ def compare(bundles, metrics, variables, names, precision, baseline):
     # Parse options
     metric_list = metrics.split(",") if metrics else None
     var_list = variables.split(",") if variables else None
+    rounded = not raw and precision is None
 
     try:
-        result = compare_bundles(
+        result, errors = compare_bundles(
             bundle_map,
             metrics=metric_list,
             variables=var_list,
+            with_se=True,
         )
     except Exception as e:
         _error_json("COMPARE_ERROR", str(e))
 
-    # Compute deltas if baseline specified
+    # Compute deltas if baseline specified.
+    # Rounding is handled at the output layer.
     if baseline:
         if baseline not in result:
             _error_json(
                 "COMPARE_ERROR",
                 f"Baseline '{baseline}' not found. Available: {list(result.keys())}",
             )
-        base_data = result[baseline]
-        deltas = {}
-        for scenario, metrics_data in result.items():
-            if scenario == baseline:
-                continue
-            scenario_delta = {}
-            for metric_name, metric_val in metrics_data.items():
-                base_val = base_data.get(metric_name, {})
-                # Compute delta on median or value fields (numeric only).
-                # Rounding is handled by _print_json at the output layer.
-                if "median" in metric_val and "median" in base_val:
-                    bm = base_val["median"]
-                    sm = metric_val["median"]
-                    if (
-                        bm is not None
-                        and sm is not None
-                        and isinstance(bm, (int, float))
-                        and isinstance(sm, (int, float))
-                    ):
-                        scenario_delta[metric_name] = sm - bm
-                elif "value" in metric_val and "value" in base_val:
-                    bv = base_val["value"]
-                    sv = metric_val["value"]
-                    if (
-                        bv is not None
-                        and sv is not None
-                        and isinstance(bv, (int, float))
-                        and isinstance(sv, (int, float))
-                    ):
-                        scenario_delta[metric_name] = sv - bv
-            deltas[scenario] = scenario_delta
+        deltas, delta_errors = compare_deltas(result, baseline, errors)
         result["_deltas_vs_" + baseline] = deltas
+        errors["_deltas_vs_" + baseline] = delta_errors
 
-    _print_json(result, precision=precision)
+    if rounded:
+        _print_json(round_comparison(result, errors))
+    else:
+        _print_json(result, precision=precision)
 
 
 # ---------------------------------------------------------------------------

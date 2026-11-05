@@ -11,6 +11,7 @@ All CLI commands print structured JSON to **stdout** and diagnostics to **stderr
 Read this file before doing anything. Then follow these principles:
 
 - **Read `summary.json` first; call `inspect` only for quantities it lacks.** Every bundle has one: 5/50/95% quantiles of peak, peak date and final value per `_total` compartment, attack rate, posterior. It is a cache; `inspect` reads Parquet.
+- **Copy `inspect` output verbatim into reports. Do not reformat or add digits.** `inspect`, `compare` and `summary.json` round each number to the first significant digit of its bootstrap standard error; a peak date whose 90% interval spans over a day is reported as `start/end` (`reported`). Unrounded: `--raw`, or `summary.json` → `raw`.
 - **Use the CLI for discovery and inspection.** `epydemix models`, `epydemix schema`, `epydemix defaults`, `epydemix inspect` — these are your primary tools. Do not read source code to figure out what's available.
 - **Use Python for analysis beyond what the CLI offers.** The CLI covers common queries (quantiles, summary, peak). For anything else (attack rates, scenario comparisons, custom metrics), write Python against the Parquet files. The manifest gives you full column schemas.
 - **Store figures inside the bundle.** Save plots to `<bundle>/figures/` and register them with `add_figure_to_manifest`. See the Visualization Recipes section.
@@ -482,7 +483,8 @@ epydemix inspect <bundle> <command> [options]
 | `--end` | End date for time slice (inclusive, ISO) | `--end 2020-05-31` |
 | `--resample` | Temporal resampling before output | `--resample W` (weekly), `--resample M` (monthly) |
 | `-q, --quantiles` | Comma-separated quantile levels | `-q 0.05,0.5,0.95` |
-| `--round` | Decimal precision (default: 6). Use `--round 2` for compact output or `--round 10` to preserve very small values. | `--round 4` |
+| `--round` | Round to N decimals instead of to the Monte Carlo error | `--round 4` |
+| `--raw` | Full-precision floats, no rounding | `--raw` |
 | `--format` | Output format: `json` (default), `csv`, `tsv` | `--format csv` |
 
 `--start` and `--end` are applied **before** resampling. When omitted, the full simulation range is used. Variables default to all `_total` compartment columns.
@@ -802,7 +804,7 @@ epydemix compare baseline.epx early.epx late.epx \
 | `-m, --metrics` | Comma-separated metrics to compute |
 | `-v, --variables` | Variable name for variable-specific metrics (`peak`, `peak_date`, `days_over`, `final_value`): a compartment column such as `Infected_total`, or a transition column such as `Susceptible_to_Infected_total` for incidence |
 | `-b, --baseline` | Scenario name for delta computation |
-| `--round` | Decimal precision (default: 6) |
+| `--round` / `--raw` | N decimals / full precision, instead of rounding to Monte Carlo error |
 
 When `--baseline` is provided, the output includes a `_deltas_vs_<name>` key with the difference (scenario minus baseline) for each numeric metric.
 
