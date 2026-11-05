@@ -199,3 +199,10 @@ TODO.md
 docs/build/
 docs/source/tutorials/*.ipynb
 docs/source/jupyter_execute/
+
+# Benchmark reference solutions are private: only the encrypted archive
+# (benchmark/references.enc) is committed. The self-test's reference is public.
+benchmark/tasks/*/reference/
+!benchmark/tasks/selftest/reference/
+benchmark-runs/
+benchmark-results.jsonl

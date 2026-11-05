@@ -1,0 +1,9 @@
+checks:
+  - {name: r0, type: config_equals, path: r0, expect: 2.5, rtol: 0.02}
+  - {name: contact_reduction, type: config_equals, path: interventions.0.reduction, expect: 0.5, rtol: 0.001}
+  - {name: early_attack_rate, type: metric_within, bundle: "outputs/early.epx", metric: attack_rate.0.5, reference: "outputs/early.epx", rtol: 0.1}
+  - {name: late_attack_rate, type: metric_within, bundle: "outputs/late.epx", metric: attack_rate.0.5, reference: "outputs/late.epx", rtol: 0.1}
+  - {name: policy_ranking, type: ranking_preserved, metric: attack_rate.0.5, items: ["outputs/early.epx", "outputs/late.epx"], order: reference}
+  - {name: provenance, type: provenance_complete}
+  - {name: assumptions, type: assumptions_declared}
+  - {name: reports_attack_rate, type: report_mentions, pattern: "(?i)attack rate"}

@@ -1,0 +1,12 @@
+checks:
+  - {name: r0, type: config_equals, path: r0, expect: 1.6, rtol: 0.02}
+  - {name: closure_strength, type: config_equals, path: interventions.0.reduction, expect: 0.9, rtol: 0.001, skip_missing: true}
+  - {name: baseline_peak, type: metric_within, bundle: "outputs/baseline.epx", metric: variables.Infected_total.peak.0.5, reference: "outputs/baseline.epx", rtol: 0.15}
+  - name: timing_ranking
+    type: ranking_preserved
+    metric: variables.Infected_total.peak.0.5
+    items: ["outputs/**/*2026-12-01*.epx", "outputs/**/*2027-01-12*.epx", "outputs/**/*2027-03-30*.epx"]
+    order: reference
+  - {name: provenance, type: provenance_complete}
+  - {name: assumptions, type: assumptions_declared}
+  - {name: reports_start_date, type: report_mentions, pattern: "20(26|27)-\\d\\d-\\d\\d"}

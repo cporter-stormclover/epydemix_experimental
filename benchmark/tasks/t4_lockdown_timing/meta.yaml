@@ -1,0 +1,8 @@
+id: t4_lockdown_timing
+title: Early or late contact reduction
+paper_task: T4
+description: >
+  Two intervention scenarios on an age-structured population: the same
+  contact reduction, started 30 or 60 days into the epidemic.
+needs_population: true
+timeout_s: 3600

@@ -1,0 +1,7 @@
+checks:
+  - {name: transmission_rate, type: config_equals, path: parameters.transmission_rate, expect: 0.3, rtol: 0.001}
+  - {name: recovery_rate, type: config_equals, path: parameters.recovery_rate, expect: 0.1, rtol: 0.001}
+  - {name: peak, type: metric_within, metric: variables.Infected_total.peak.0.5, reference: "outputs/sir.epx", rtol: 0.05}
+  - {name: provenance, type: provenance_complete}
+  - {name: assumptions, type: assumptions_declared}
+  - {name: reports_peak, type: report_mentions, pattern: "(?i)peak"}

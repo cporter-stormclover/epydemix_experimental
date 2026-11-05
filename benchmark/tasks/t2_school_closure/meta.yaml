@@ -1,0 +1,8 @@
+id: t2_school_closure
+title: Timing of a school closure
+paper_task: T2
+description: >
+  A scenario sweep: eighteen weekly start dates for a three-week school
+  closure, compared with no closure.
+needs_population: true
+timeout_s: 3600

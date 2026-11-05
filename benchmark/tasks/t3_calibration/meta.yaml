@@ -1,0 +1,8 @@
+id: t3_calibration
+title: Calibration and projection
+paper_task: T3
+description: >
+  Estimate a transmission rate from incidence data by ABC, then project the
+  epidemic forward under a contact reduction.
+needs_population: false
+timeout_s: 3600
