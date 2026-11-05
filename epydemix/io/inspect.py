@@ -187,6 +187,67 @@ def _resolve_variables(
 
 
 # ---------------------------------------------------------------------------
+# Per-simulation statistics shared by inspect, compare and summary.json
+# ---------------------------------------------------------------------------
+
+# The quantile levels reported for per-simulation statistics (peak, final
+# value, ...). ``inspect summary`` and ``inspect peak`` label the median
+# "0.50"; summary.json uses the plain "0.5" that ``inspect quantiles`` uses.
+SUMMARY_QUANTILES = (0.05, 0.5, 0.95)
+
+
+def _quantile_key(q: float, key_format: str) -> str:
+    if key_format == "legacy":
+        return f"{q:.2f}"
+    return str(q)
+
+
+def _per_simulation_stats(pivoted: pd.DataFrame) -> Dict[str, pd.Series]:
+    """Peak value, peak date and final value of each simulation.
+
+    Args:
+        pivoted: One row per date, one column per simulation.
+    """
+    return {
+        "peak": pivoted.max(axis=0),
+        "peak_date": pd.to_datetime(pivoted.idxmax(axis=0)),
+        "final": pivoted.iloc[-1],
+    }
+
+
+def _value_quantiles(
+    values: pd.Series,
+    quantiles=SUMMARY_QUANTILES,
+    key_format: str = "plain",
+) -> Dict[str, float]:
+    """Quantiles of a per-simulation statistic, keyed by quantile level."""
+    return {_quantile_key(q, key_format): float(values.quantile(q)) for q in quantiles}
+
+
+def _date_quantiles(
+    dates: pd.Series,
+    quantiles=SUMMARY_QUANTILES,
+    key_format: str = "plain",
+) -> Dict[str, Optional[str]]:
+    """Quantiles of per-simulation dates, by position in the sorted dates.
+
+    Dates cannot be interpolated like numbers, so the q-quantile is the date at
+    position ``int(q * n)`` of the sorted dates (clamped to the valid range).
+    """
+    sorted_dates = pd.to_datetime(dates).sort_values()
+    n = len(sorted_dates)
+    result = {}
+    for q in quantiles:
+        key = _quantile_key(q, key_format)
+        if n == 0:
+            result[key] = None
+            continue
+        pos = min(n - 1, max(0, int(q * n)))
+        result[key] = str(sorted_dates.iloc[pos])[:10]
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
 
@@ -264,32 +325,16 @@ def _cmd_summary(
     result = {}
     for var in variables:
         pivoted = df.pivot(index="date", columns="sim_id", values=var)
-
-        # Peak: per-simulation max, then quantiles of peak values and dates
-        peak_values = pivoted.max(axis=0)
-        peak_indices = pivoted.idxmax(axis=0)
-
-        # Final value across simulations
-        final_values = pivoted.iloc[-1]
-
-        # Use sorted-index approach for median date (robust across pandas versions)
-        peak_dates_sorted = pd.to_datetime(peak_indices).sort_values()
+        stats = _per_simulation_stats(pivoted)
+        peak_dates_sorted = stats["peak_date"].sort_values()
         n_peaks = len(peak_dates_sorted)
 
         var_summary = {
             "peak_date_median": str(peak_dates_sorted.iloc[n_peaks // 2])[:10]
             if n_peaks > 0
             else None,
-            "peak_value": {
-                "0.05": float(peak_values.quantile(0.05)),
-                "0.50": float(peak_values.quantile(0.50)),
-                "0.95": float(peak_values.quantile(0.95)),
-            },
-            "final_value": {
-                "0.05": float(final_values.quantile(0.05)),
-                "0.50": float(final_values.quantile(0.50)),
-                "0.95": float(final_values.quantile(0.95)),
-            },
+            "peak_value": _value_quantiles(stats["peak"], key_format="legacy"),
+            "final_value": _value_quantiles(stats["final"], key_format="legacy"),
             "mean_across_time": {
                 "0.50": float(pivoted.quantile(0.5, axis=1).mean()),
             },
@@ -316,30 +361,10 @@ def _cmd_peak(
     result = {}
     for var in variables:
         pivoted = df.pivot(index="date", columns="sim_id", values=var)
-
-        peak_values = pivoted.max(axis=0)
-        peak_dates = pivoted.idxmax(axis=0)
-
-        # Convert peak dates to sortable format for quantile estimation
-        peak_dates_ts = pd.to_datetime(peak_dates)
-        sorted_dates = peak_dates_ts.sort_values()
-        n = len(sorted_dates)
-
+        stats = _per_simulation_stats(pivoted)
         result[var] = {
-            "peak_date": {
-                "0.05": str(sorted_dates.iloc[max(0, int(0.05 * n))])[:10]
-                if n > 0
-                else None,
-                "0.50": str(sorted_dates.iloc[int(0.5 * n)])[:10] if n > 0 else None,
-                "0.95": str(sorted_dates.iloc[min(n - 1, int(0.95 * n))])[:10]
-                if n > 0
-                else None,
-            },
-            "peak_value": {
-                "0.05": float(peak_values.quantile(0.05)),
-                "0.50": float(peak_values.quantile(0.50)),
-                "0.95": float(peak_values.quantile(0.95)),
-            },
+            "peak_date": _date_quantiles(stats["peak_date"], key_format="legacy"),
+            "peak_value": _value_quantiles(stats["peak"], key_format="legacy"),
         }
 
     return result
@@ -467,25 +492,35 @@ def _cmd_fit(
 # optionally "ci90" (a two-element list).
 
 
-def _metric_attack_rate(comp, manifest, **kw):
-    """Fraction of population ever infected (recovered + dead)."""
-    # Find terminal compartments (R-like + D-like)
+def _legacy_attack_rate_samples(comp) -> Optional[pd.Series]:
+    """Per-simulation attack rate (fraction) from susceptible depletion.
+
+    ``1 - S_final / S_initial``. This counts everyone who left the susceptible
+    compartment, so it overstates the attack rate of models in which people
+    leave it without being infected (vaccination). Returns None when the bundle
+    has no susceptible compartment.
+    """
     total_cols = [
         c for c in comp.columns if c.endswith("_total") and c not in ("sim_id", "date")
     ]
-    # Heuristic: susceptible is the only compartment that decreases monotonically
-    # Attack rate = 1 - S_final / S_initial
     s_col = None
     for c in total_cols:
         if c.startswith("S") or c.startswith("Susceptible"):
             s_col = c
             break
     if s_col is None:
-        return {"value": None, "note": "no susceptible compartment found"}
+        return None
 
     first_day = comp.groupby("sim_id")[s_col].first()
     last_day = comp.groupby("sim_id")[s_col].last()
-    attack = 1.0 - last_day / first_day
+    return 1.0 - last_day / first_day
+
+
+def _metric_attack_rate(comp, manifest, **kw):
+    """Fraction of population ever infected (recovered + dead)."""
+    attack = _legacy_attack_rate_samples(comp)
+    if attack is None:
+        return {"value": None, "note": "no susceptible compartment found"}
     return {
         "median": float(attack.median()) * 100,
         "ci90": [

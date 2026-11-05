@@ -92,6 +92,7 @@ def run(config_path, output):
     Writes an .epx bundle and prints the manifest to stdout.
     """
     from ..io.bundle import save_bundle
+    from ..io.summary import try_write_summary
     from .config import load_config, run_from_config, validate_config
 
     try:
@@ -114,6 +115,7 @@ def run(config_path, output):
         results, used_config = run_from_config(config, config_dir=config_dir)
         prov = _provenance("run", config_path, used_config)
         manifest = save_bundle(results, output, config=used_config, provenance=prov)
+        manifest = try_write_summary(output, manifest)
         click.echo(f"Bundle saved to: {output}", err=True)
         _print_json(manifest)
     except Exception as e:
@@ -140,6 +142,7 @@ def calibrate(config_path, output):
     Writes an .epx calibration bundle and prints the manifest to stdout.
     """
     from ..io.bundle import save_bundle
+    from ..io.summary import try_write_summary
     from .config import (
         calibrate_from_config,
         load_config,
@@ -167,6 +170,7 @@ def calibrate(config_path, output):
         results, used_config = calibrate_from_config(config, config_dir=config_dir)
         prov = _provenance("calibrate", config_path, used_config)
         manifest = save_bundle(results, output, config=used_config, provenance=prov)
+        manifest = try_write_summary(output, manifest)
         click.echo(f"Calibration bundle saved to: {output}", err=True)
         _print_json(manifest)
     except Exception as e:
@@ -223,6 +227,7 @@ def project(calibration_bundle, config_path, output):
       epydemix project calibration.epx -c projection.yaml -o projection.epx
     """
     from ..io.bundle import save_bundle
+    from ..io.summary import try_write_summary
     from .config import (
         load_config,
         project_from_config,
@@ -287,6 +292,7 @@ def project(calibration_bundle, config_path, output):
         prov = _provenance("project", config_path, used_config)
         prov["parent_bundle"] = str(Path(calibration_bundle).resolve())
         manifest = save_bundle(results, output, config=used_config, provenance=prov)
+        manifest = try_write_summary(output, manifest)
         click.echo(f"Projection bundle saved to: {output}", err=True)
         _print_json(manifest)
     except Exception as e:

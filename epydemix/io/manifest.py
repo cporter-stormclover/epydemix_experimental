@@ -1,10 +1,18 @@
 """Build manifest.json metadata from simulation and calibration results."""
 
+import uuid
 from datetime import datetime
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Dict, Optional
 
 import numpy as np
+
+# Version of the manifest layout. Readers accept every earlier version: keys are
+# only ever added. Manifests written before versioning have no schema_version
+# and are version 1.
+#   2: ``schema_version`` and a unique bundle ``id``; ``files.summary``
+#      (summary.json) in bundles written by the CLI.
+MANIFEST_SCHEMA_VERSION = 2
 
 
 def _get_version() -> str:
@@ -65,6 +73,8 @@ def build_simulation_manifest(
         ]
 
     manifest = {
+        "schema_version": MANIFEST_SCHEMA_VERSION,
+        "id": uuid.uuid4().hex,
         "type": "SimulationResults",
         "epydemix_version": _get_version(),
         "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
@@ -186,6 +196,8 @@ def build_calibration_manifest(
                 population_section["contact_layers"] = pop_cfg["contact_layers"]
 
     manifest = {
+        "schema_version": MANIFEST_SCHEMA_VERSION,
+        "id": uuid.uuid4().hex,
         "type": "CalibrationResults",
         "epydemix_version": _get_version(),
         "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",

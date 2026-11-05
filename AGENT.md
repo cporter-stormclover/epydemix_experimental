@@ -10,6 +10,7 @@ All CLI commands print structured JSON to **stdout** and diagnostics to **stderr
 
 Read this file before doing anything. Then follow these principles:
 
+- **Read `summary.json` first; call `inspect` only for quantities it lacks.** Every bundle has one: 5/50/95% quantiles of peak, peak date and final value per `_total` compartment, attack rate, posterior. It is a cache; `inspect` reads Parquet.
 - **Use the CLI for discovery and inspection.** `epydemix models`, `epydemix schema`, `epydemix defaults`, `epydemix inspect` — these are your primary tools. Do not read source code to figure out what's available.
 - **Use Python for analysis beyond what the CLI offers.** The CLI covers common queries (quantiles, summary, peak). For anything else (attack rates, scenario comparisons, custom metrics), write Python against the Parquet files. The manifest gives you full column schemas.
 - **Store figures inside the bundle.** Save plots to `<bundle>/figures/` and register them with `add_figure_to_manifest`. See the Visualization Recipes section.
@@ -325,6 +326,7 @@ Running `epydemix run` produces a `.epx` directory:
 ```
 results.epx/
   manifest.json         # metadata + full Parquet schemas (see below)
+  summary.json          # headline quantiles: peak, peak_date, final, attack_rate
   compartments.parquet  # (sim_id, date, S_total, I_total, ..., S_0-4, S_5-19, ...)
   transitions.parquet   # (sim_id, date, S_to_I_total, ..., S_to_I_0-4, ...)
   parameters.parquet    # (sim_id) — only populated for calibration runs; empty for plain run
@@ -1150,6 +1152,27 @@ Errors are printed as JSON to stderr:
 Error codes: `CONFIG_LOAD_ERROR`, `INVALID_CONFIG`, `RUNTIME_ERROR`, `INSPECT_ERROR`, `UNKNOWN_MODEL`, `UNKNOWN_DEFAULTS`, `POPULATION_ERROR`.
 
 ## Complete Workflow Examples
+
+### Case study: vaccination rates in Italy
+
+SEIR, R₀ = 2.5, leaky vaccine; four scenarios, four bundles:
+
+```bash
+cat > base.yaml << 'EOF'
+model: {type: SEIR, vaccination: true}
+population: {name: Italy, contact_layers: [home, work, school, community]}
+parameters: {transmission_rate: 0.036, incubation_rate: 0.25, recovery_rate: 0.2,
+             vaccine_efficacy: 0.8, vaccination_rate: 0.0}
+simulation: {start_date: "2026-10-01", end_date: "2027-03-31", n_simulations: 100}
+initial_conditions: {Susceptible: 0.9999, Exposed: 0.00005, Infected: 0.00005,
+                     Recovered: 0.0, Vaccinated: 0.0}
+EOF
+for s in no_vaccination:0.0 low:0.0015 moderate:0.0045 high:0.0115; do
+  printf 'base: base.yaml\nparameters: {vaccination_rate: %s}\n' "${s#*:}" > "${s%%:*}.yaml"
+  epydemix run "${s%%:*}.yaml" -o "${s%%:*}.epx"
+done
+python -c "import json; print(json.load(open('high.epx/summary.json'))['variables']['Infected_total']['peak'])"
+```
 
 For end-to-end worked examples (basic SIR, COVID-19 with interventions, custom Python analysis, calibration, and projections), see [AGENT_EXAMPLES.md](AGENT_EXAMPLES.md).
 

@@ -97,6 +97,7 @@ def test_run_inspect_and_compare_scenarios(workdir):
         "figures",
         "manifest.json",
         "parameters.parquet",
+        "summary.json",
         "transitions.parquet",
     ]
 

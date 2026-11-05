@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Added
+
+* `run`, `calibrate` and `project` write `summary.json` (peak, peak date and final value quantiles of every `_total` compartment, attack rate, posterior statistics) next to `manifest.json`; `epydemix.io` adds `build_summary`, `write_summary` and `load_summary`, and manifests gain `schema_version` and a bundle `id`.
+
+---
+
 ## [1.5.0] - 2026-10-21
 
 ### Added
