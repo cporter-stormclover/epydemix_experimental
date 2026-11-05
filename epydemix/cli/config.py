@@ -134,6 +134,23 @@ def _resolve_config(path: str, depth: int, seen: set) -> Dict[str, Any]:
     return config
 
 
+def _is_declarative(model_cfg: Dict[str, Any]) -> bool:
+    """True for a custom model written as a ``model.custom`` block."""
+    return isinstance(model_cfg, dict) and "custom" in model_cfg
+
+
+def _declarative_registry(custom: Any):
+    """Registry of the parameters a ``model.custom`` block declares inline."""
+    from ..model import declarative
+    from ..parameters import ParameterRegistry
+
+    registry = ParameterRegistry()
+    if isinstance(custom, dict):
+        for spec in declarative.inline_specs(custom):
+            registry.register(spec)
+    return registry
+
+
 def _check_ic_normalization(ic_cfg: Dict[str, Any], tol: float = 1e-4) -> List[str]:
     """Return error strings for any demographic-group path whose IC fractions don't sum to 1.
 
@@ -549,8 +566,25 @@ def _validate_custom_references(
 
 
 def _validate_population(pop_cfg: Any, errors: list, warnings: list) -> None:
-    """Check the population section's data version."""
-    if not isinstance(pop_cfg, dict) or "data_version" not in pop_cfg:
+    """Check the population section's data version and age groups."""
+    if not isinstance(pop_cfg, dict):
+        return
+    if "age_groups" in pop_cfg:
+        cuts = pop_cfg["age_groups"]
+        if not (
+            isinstance(cuts, list)
+            and cuts
+            and all(isinstance(c, int) and not isinstance(c, bool) for c in cuts)
+            and cuts[0] == 0
+            and all(a < b for a, b in zip(cuts, cuts[1:]))
+        ):
+            errors.append(
+                "population.age_groups must be increasing whole ages starting at 0, "
+                f"e.g. [0, 20, 65] for 0-19, 20-64 and 65+; got {cuts!r}"
+            )
+        if "name" not in pop_cfg:
+            errors.append("population.age_groups needs population.name")
+    if "data_version" not in pop_cfg:
         return
     version = pop_cfg["data_version"]
     if not isinstance(version, str) or not version.strip():
@@ -659,7 +693,10 @@ def validate_config(
                 "Hospitalized → Recovered transition)"
             )
 
-    if model_type == "custom":
+    if _is_declarative(model_cfg) and model_type != "custom":
+        errors.append("model.custom needs model.type: custom (or no type)")
+
+    if model_type == "custom" and not _is_declarative(model_cfg):
         if "compartments" not in model_cfg:
             errors.append("Custom model requires 'model.compartments'")
         if "transitions" not in model_cfg:
@@ -749,8 +786,21 @@ def validate_config(
                     f"No value given for {', '.join(unset)}; using the model default"
                     f"{'s' if len(unset) > 1 else ''}"
                 )
-    elif isinstance(model_cfg.get("compartments"), list):
-        compartments = model_cfg["compartments"]
+    elif _is_declarative(model_cfg) or isinstance(model_cfg.get("compartments"), list):
+        if _is_declarative(model_cfg):
+            from ..model import declarative
+
+            custom = model_cfg["custom"]
+            compartments = (
+                declarative.compartment_names(custom)
+                if isinstance(custom, dict)
+                else None
+            )
+            registry = _declarative_registry(custom)
+            # Parameter names and values are checked against the inline specs.
+            _validate_predefined_parameters(registry, uses, errors)
+        else:
+            compartments = model_cfg["compartments"]
         from ..parameters.predefined_specs import default_semantic_checks
 
         for check in default_semantic_checks():
@@ -773,7 +823,14 @@ def validate_config(
             for section, name, _, _ in uses
             if section in ("parameters", "calibration.priors")
         } | set(_derived_block(config))
-        _validate_custom_references(model_cfg, defined, errors)
+        if _is_declarative(model_cfg):
+            from ..model import declarative
+
+            declarative.validate(
+                model_cfg["custom"], defined, config.get("initial_conditions"), errors
+            )
+        else:
+            _validate_custom_references(model_cfg, defined, errors)
         for section, name, _, _ in uses:
             if section.startswith("overrides") and name not in defined:
                 errors.append(
@@ -942,17 +999,70 @@ _POPULATION_CACHE: Dict[Tuple, Any] = {}
 def clear_population_cache() -> None:
     """Forget the populations loaded so far in this process."""
     _POPULATION_CACHE.clear()
+    _SOURCE_CACHE.clear()
 
 
-def _named_population(name: str, layers: Optional[list], data_version: str):
+_SOURCE_CACHE: Dict[Tuple, str] = {}
+
+
+def contacts_source(name: str, data_version: str) -> str:
+    """Primary contact-matrix source of a named population (cached)."""
+    key = (name, data_version)
+    if key not in _SOURCE_CACHE:
+        from ..population.population import (
+            EPYDEMIX_DATA_BASE_URL,
+            get_primary_contacts_source,
+        )
+
+        _SOURCE_CACHE[key] = get_primary_contacts_source(
+            name, f"{EPYDEMIX_DATA_BASE_URL}/{data_version}/"
+        )
+    return _SOURCE_CACHE[key]
+
+
+def age_group_mapping(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """How ``population.age_groups`` regroups the data's finest age bins.
+
+    Returns ``{"cuts", "contacts_source", "groups": {new group: [fine bins]}}``,
+    or None when the config keeps the default groups.
+    """
+    from ..population.population import age_group_mapping_from_cuts
+
+    pop_cfg = config.get("population") or {}
+    cuts = pop_cfg.get("age_groups")
+    if not cuts or not pop_cfg.get("name"):
+        return None
+    source = contacts_source(
+        pop_cfg["name"], pop_cfg.get("data_version", DEFAULT_DATA_VERSION)
+    )
+    groups = age_group_mapping_from_cuts(cuts, source)
+    return {"cuts": list(cuts), "contacts_source": source, "groups": groups}
+
+
+def _named_population(
+    name: str, layers: Optional[list], data_version: str, age_groups=None
+):
     from ..model import epimodel as _epimodel
 
-    key = (name, tuple(layers) if layers else None, data_version)
+    key = (
+        name,
+        tuple(layers) if layers else None,
+        data_version,
+        tuple(age_groups) if age_groups else None,
+    )
     if key not in _POPULATION_CACHE:
+        kwargs = {}
+        if age_groups:
+            from ..population.population import age_group_mapping_from_cuts
+
+            kwargs["age_group_mapping"] = age_group_mapping_from_cuts(
+                age_groups, contacts_source(name, data_version)
+            )
         _POPULATION_CACHE[key] = _epimodel.load_epydemix_population(
             name,
             layers=list(layers) if layers else ["school", "work", "home", "community"],
             data_version=data_version,
+            **kwargs,
         )
     return copy.deepcopy(_POPULATION_CACHE[key])
 
@@ -1109,13 +1219,22 @@ def build_model_from_config(
             model.population.Nk = np.array([pop_cfg["size"]], dtype=float)
     else:
         # Custom model
-        compartments = model_cfg.get("compartments", [])
+        custom = model_cfg.get("custom") if _is_declarative(model_cfg) else None
+        if custom is not None:
+            from ..model import declarative
+
+            compartments = declarative.compartment_names(custom)
+        else:
+            compartments = model_cfg.get("compartments", [])
         model = EpiModel(
             compartments=compartments,
             parameters=params,
             use_default_population=True,
             default_population_size=pop_cfg.get("size", 100_000),
         )
+        if custom is not None:
+            for spec in declarative.inline_specs(custom):
+                model.register_parameter_spec(spec)
 
     # Population — load before transitions so n_groups is correct when
     # schedule files are resolved (e.g. kind: scheduled needs the real n_groups).
@@ -1125,10 +1244,30 @@ def build_model_from_config(
                 pop_cfg["name"],
                 pop_cfg.get("contact_layers"),
                 pop_cfg.get("data_version", DEFAULT_DATA_VERSION),
+                pop_cfg.get("age_groups"),
             )
         )
 
-    if model_type not in SUPPORTED_MODELS:
+    if model_type not in SUPPORTED_MODELS and _is_declarative(model_cfg):
+        sim_cfg = config.get("simulation", {})
+
+        def schedule(spec):
+            return _load_schedule(
+                spec,
+                config_dir=config_dir,
+                start_date=sim_cfg["start_date"],
+                end_date=sim_cfg["end_date"],
+                n_groups=len(model.population.Nk),
+                group_names=list(model.population.Nk_names),
+            )
+
+        declarative.add_transitions(
+            model,
+            model_cfg["custom"],
+            set(params) | set((model_cfg["custom"].get("parameters") or {})),
+            schedule_loader=schedule,
+        )
+    elif model_type not in SUPPORTED_MODELS:
         # Add transitions now that the population (and its n_groups) is known
         sim_cfg = config.get("simulation", {})
         for tr in model_cfg.get("transitions", []):

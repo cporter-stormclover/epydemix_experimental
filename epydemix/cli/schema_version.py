@@ -22,6 +22,7 @@ INTRODUCED: Dict[int, List[str]] = {
     3: ["population.data_version"],
     4: ["derived"],
     5: ["sweep"],
+    6: ["model.custom", "population.age_groups"],
 }
 CONFIG_SCHEMA_VERSION = max(INTRODUCED)
 

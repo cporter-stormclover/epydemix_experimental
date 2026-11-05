@@ -157,9 +157,16 @@ def _transition_rate(config: Dict[str, Any], spec: str) -> Optional[float]:
         agents = t.get("agents") or ([t_agent] if t_agent else [])
         if agent is not None and agent not in agents:
             continue
-        if isinstance(rate, str):
-            rate = rate if rate not in params else params[rate]
-        value = float(evaluate(rate, params)) if isinstance(rate, str) else float(rate)
+        if isinstance(rate, str) and rate in params:
+            rate = params[rate]
+        if isinstance(rate, str) and custom is not None:
+            from epydemix.model.expressions import compile_expression
+
+            value = float(compile_expression(rate, set(params)).evaluate(params))
+        elif isinstance(rate, str):
+            value = float(evaluate(rate, params))
+        else:
+            value = float(rate)
         total += value
         found = True
     return total if found else None

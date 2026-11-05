@@ -507,9 +507,10 @@ def derive(config_path, raw):
             details["value"] = format_parameter(
                 name, details["value"], registry, details["inputs"], precision
             )
-            details["gamma"] = format_parameter(
-                "gamma", details["gamma"], registry, gamma_inputs or None
-            )
+            if details["gamma"] is not None:
+                details["gamma"] = format_parameter(
+                    "gamma", details["gamma"], registry, gamma_inputs or None
+                )
             details["rho"] = round_significant(details["rho"], 4)
     _print_json({"derived": resolved, "warnings": validation["warnings"]})
 
@@ -695,7 +696,11 @@ def _print_tabular(data, fmt):
     "hospitalization → hospitalization_rate, hospitalization_recovery_rate).",
 )
 def schema(model_name, fmt, waning_immunity, vaccination, outcome):
-    """Show the parameter schema for a predefined model.
+    """Show the parameter schema of a predefined model, or of a custom model config.
+
+    For a config file with a `model.custom` block, prints its inline parameter
+    specs as JSON Schema and its compartment graph (compartments with roles,
+    transitions, and a Mermaid diagram).
 
     \b
     Examples:
@@ -703,8 +708,34 @@ def schema(model_name, fmt, waning_immunity, vaccination, outcome):
       epydemix schema SEIAR
       epydemix schema SEIR --waning-immunity --outcome deaths
       epydemix schema SIR --format describe
+      epydemix schema seirhd.yaml
     """
     from ..model.predefined_models import SUPPORTED_MODELS, load_predefined_model
+
+    if Path(model_name).is_file():
+        from ..model import declarative
+        from .config import _declarative_registry, load_config
+
+        try:
+            config = load_config(model_name)
+        except Exception as e:
+            _error_json("CONFIG_LOAD_ERROR", str(e))
+        model_cfg = config.get("model") or {}
+        if not isinstance(model_cfg.get("custom"), dict):
+            _error_json(
+                "UNKNOWN_MODEL",
+                f"{model_name} has no model.custom block; for a predefined model "
+                "pass its name (e.g. SEIR)",
+            )
+        registry = _declarative_registry(model_cfg["custom"])
+        if fmt == "describe":
+            click.echo(registry.describe())
+            click.echo(declarative.graph(model_cfg["custom"])["mermaid"])
+            return
+        result = registry.to_json_schema(title=f"{Path(model_name).name} parameters")
+        result["x-compartment-graph"] = declarative.graph(model_cfg["custom"])
+        _print_json(result)
+        return
 
     model_name = model_name.upper()
     if model_name not in SUPPORTED_MODELS:

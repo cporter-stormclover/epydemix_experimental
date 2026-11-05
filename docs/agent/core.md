@@ -121,53 +121,49 @@ sweep:
 
 ## Custom models
 
+Reach for `model.custom` before falling back to the Python API. It declares compartments (with roles), parameter specs and transitions, and keeps validation (names, ranges, reachability), R₀ derivation and the model-aware attack rate. Worked example, *"SEIRHD: latent 3 days, infectious 5 days, 10% then hospitalized for 8 days, 20% of them die; hospital patients also infect"*:
+
 ```yaml
 model:
   type: custom
-  compartments: [S, E, I_mild, I_severe, H, R, D]
-  transitions:
-    - {source: S, target: E, kind: mediated, params: [beta, I_mild]}
-    - {source: E, target: I_mild, kind: spontaneous, params: "sigma * (1 - p_severe)"}
+  custom:
+    compartments: [S, {name: E, role: infected}, {name: I, role: infected},
+                   {name: H, role: infected}, R, D]
+    parameters:                      # specs; their values go in `parameters:`
+      beta: {kind: rate, range: [0, 5], unit: 1/days, precision: 2}
+      beta_h: {kind: rate, range: [0, 5], unit: 1/days}
+      sigma: {kind: rate, range: [0, 10], unit: 1/days}
+      gamma: {kind: rate, range: [0, 10], unit: 1/days}
+      p_hosp: {kind: probability, range: [0, 1]}
+      delta: {kind: rate, range: [0, 10], unit: 1/days}
+      p_death: {kind: probability, range: [0, 1]}
+    transitions:
+      - {from: S, to: E, kind: contact, rate: beta, agents: [I]}
+      - {from: S, to: E, kind: contact, rate: beta_h, agents: [H]}
+      - {from: E, to: I, rate: sigma}
+      - {from: I, to: H, expression: "gamma * p_hosp"}
+      - {from: I, to: R, expression: "gamma * (1 - p_hosp)"}
+      - {from: H, to: D, expression: "delta * p_death"}
+      - {from: H, to: R, expression: "delta * (1 - p_death)"}
+parameters: {beta: 0.3, beta_h: 0.05, sigma: 0.333, gamma: 0.2, p_hosp: 0.1, delta: 0.125, p_death: 0.2}
+initial_conditions: {S: 999900, E: 0, I: 100, H: 0, R: 0, D: 0}
 ```
 
-Kinds: **`spontaneous`** — leave at a rate (recovery, progression, death, waning); `params` is a parameter or an expression of parameters (`+ - * / % **`, comparisons, `and/or/not`). **`mediated`** — infection by contact: `params: [rate, agent]`, force `rate · Σ C · agent / N`; one transition per infectious compartment (same-pair rates add; the flow is recorded once). **`scheduled`** — absolute daily doses: `schedule:` a CSV (first column dates, then one column per group, matched by group name; missing dates are 0) or an inline list; optional `eligible: [S, R]` spreads doses over those compartments, only those landing on the source count; `rate = min(doses / pool, 0.999)`.
-
-Leaky vaccine: `S → V` (scheduled or spontaneous) plus `V → E` mediated at a reduced rate declared as its own parameter. Vaccine waning: `V → S` spontaneous, independent of `R → S`. Herd immunity with a leaky vaccine needs coverage `HIT / VE`, `HIT = 1 − 1/R₀`.
+Transition kinds: `spontaneous` (default; leave at a rate), `contact` (infection through the contact matrix, `rate · Σ C · agent / N`, one flow per agent in `agents`) and `scheduled` (daily doses: `schedule:` a CSV with a date column and one column per group, or an inline list; optional `eligible:` compartments share the doses; needs `dt: 1.0`). A rate is a declared parameter (`rate:`) or an `expression:` of declared parameters, compartment sizes and `pop` (group sizes) using only `+ - * /`, unary minus, `min()` and `max()` (≤ 200 characters), e.g. `"delta * max(1, H / (capacity * pop))"`. `role: infected` marks what R₀ and the attack rate count (also `susceptible`, `recovered`, `dead`, `vaccinated`, `other`). `epydemix schema config.yaml` prints the parameter schema and the compartment graph. `validate` rejects undeclared parameters, values outside their `range`, unknown compartments and compartments no run can reach. The original grammar (`model.compartments` and `model.transitions` with `source`, `target`, `kind: mediated|spontaneous|scheduled`, `params`) still works.
 
 | Natural language | Transition |
 |---|---|
-| "X becomes Y at rate r" | `spontaneous`, `params: r` |
-| "X infected by contact with Y at rate r" | `mediated`, `params: [r, Y]` |
-| "X loses immunity" | `spontaneous` X → S, `params: waning_rate` |
-| "fraction p of X go to Y, the rest to Z" | two `spontaneous`, rates `k*p` and `k*(1-p)` |
-| "case fatality p over mean duration d" | `spontaneous` → D, `rate = -ln(1-p) / d` |
-| "several infectious stages transmit" | one `mediated` per stage |
-| "N doses per day from a schedule" | `scheduled`, `schedule: doses.csv` |
+| "X becomes Y at rate r" | `{from: X, to: Y, rate: r}` |
+| "X infected by contact with Y (and Z) at rate r" | `{from: X, to: E, kind: contact, rate: r, agents: [Y, Z]}` |
+| "X loses immunity" | `{from: R, to: S, rate: waning_rate}` |
+| "fraction p of X go to Y, the rest to Z" | `expression: "k * p"` and `"k * (1 - p)"` |
+| "case fatality p over mean duration d" | → D with `rate = -ln(1-p) / d` |
+| "N doses per day from a schedule" | `kind: scheduled, schedule: doses.csv` |
+| "rate grows once beds fill" | `expression` with `max(1, H / (capacity * pop))` |
 
-Worked example, *"COVID-19 with a latent period, mild and severe infection, hospitalization, death, and immunity waning after ~1 year"*:
+Leaky vaccine: `S → V` (scheduled or spontaneous) plus a `contact` transition `V → E` at its own reduced rate; vaccine waning `V → S` is independent of `R → S`. Herd immunity with a leaky vaccine needs coverage `HIT / VE`, `HIT = 1 − 1/R₀`. Comparing scenarios with different compartments: write every scenario as a custom model, so the column names (`S_total` vs `Susceptible_total`) agree.
 
-```yaml
-model:
-  type: custom
-  compartments: [S, E, I_mild, I_severe, H, R, D]
-  transitions:
-    - {source: S, target: E, kind: mediated, params: [beta_mild, I_mild]}
-    - {source: S, target: E, kind: mediated, params: [beta_severe, I_severe]}
-    - {source: S, target: E, kind: mediated, params: [beta_hosp, H]}
-    - {source: E, target: I_mild, kind: spontaneous, params: "sigma * (1 - p_severe)"}
-    - {source: E, target: I_severe, kind: spontaneous, params: "sigma * p_severe"}
-    - {source: I_mild, target: R, kind: spontaneous, params: gamma_mild}
-    - {source: I_severe, target: H, kind: spontaneous, params: hosp_rate}
-    - {source: H, target: R, kind: spontaneous, params: gamma_hosp}
-    - {source: H, target: D, kind: spontaneous, params: death_rate}
-    - {source: R, target: S, kind: spontaneous, params: waning_rate}
-parameters: {beta_mild: 0.3, beta_severe: 0.1, beta_hosp: 0.05, sigma: 0.33, p_severe: 0.15,
-             gamma_mild: 0.14, hosp_rate: 0.2, gamma_hosp: 0.1, death_rate: 0.02,
-             waning_rate: 0.0027}
-initial_conditions: {S: 0.999, E: 0.0005, I_mild: 0.0004, I_severe: 0.0001, H: 0.0, R: 0.0, D: 0.0}
-```
-
-Every compartment in a transition must be declared, every parameter defined (in `parameters`, `derived` or priors), and no transition may have source = target. Only `spontaneous`, `mediated` and `scheduled` are available from a config. Comparing scenarios with different compartments: write every scenario as a custom model, so the column names (`S_total` vs `Susceptible_total`) agree.
+**Age groups:** `population: {name: Italy, age_groups: [0, 20, 65]}` regroups the data's finest bins into `0-19`, `20-64`, `65+` (contact matrices population-weighted; cuts on 1-year boundaries for Italy's source, multiples of 5 up to 75 for Prem-based ones). The manifest records the mapping under `population.age_group_mapping`; per-group initial conditions use the new names.
 
 ## Outputs
 
@@ -235,6 +231,7 @@ Every parameter is either fixed (`parameters`) or a prior. Priors: `uniform {low
 | A `validate` warning per chosen value | undeclared basis | `assumptions` entries |
 | Different results from the same config | `seed` absent, so drawn per run | rerun the bundle's `config.yaml`, or set `seed` |
 | `Unknown variable` in `inspect` | column names differ by model type | read the manifest's columns first |
+| `unknown symbol` / `disallowed syntax` in an expression | name not declared, or `**`, `%`, a call other than `min`/`max` | declare it under `model.custom.parameters`; rewrite with `* / min max` |
 
 ## Worked examples
 

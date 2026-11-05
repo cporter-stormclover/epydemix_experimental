@@ -48,6 +48,12 @@ def finish_bundle(
         from .config import resolve_derived
 
         manifest["derived"] = resolve_derived(used_config, config_dir)
+    if (used_config.get("population") or {}).get("age_groups"):
+        from .config import age_group_mapping
+
+        mapping = age_group_mapping(used_config)
+        if mapping and isinstance(manifest.get("population"), dict):
+            manifest["population"]["age_group_mapping"] = mapping
     manifest = try_write_summary(str(output), manifest)
     return seal_bundle(output, manifest)
 

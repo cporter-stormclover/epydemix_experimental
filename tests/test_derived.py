@@ -86,7 +86,7 @@ class TestNextGenerationMatrix:
 
     def test_rate_must_be_proportional(self):
         model = load_predefined_model("SIR", recovery_rate=0.1)
-        with pytest.raises(ValueError, match="not proportional"):
+        with pytest.raises(ValueError, match="does not grow"):
             solve_rate_for_r0(model, 2.0, parameter="recovery_rate")
 
     def test_split_transition_handles_underscores(self):

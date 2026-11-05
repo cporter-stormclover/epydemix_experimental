@@ -23,6 +23,10 @@ import numpy as np
 # infected people. Custom models declare theirs (``role: infected``).
 INFECTED_LIKE = frozenset({"Exposed", "Infected", "Infectious", "Asymptomatic"})
 SUSCEPTIBLE_LIKE = frozenset({"Susceptible"})
+# Transition kinds by role in the next-generation matrix (declarative custom
+# models add the expression kinds).
+MEDIATED_KINDS = ("mediated", "contact_expression")
+SPONTANEOUS_KINDS = ("spontaneous", "expression")
 
 
 def spectral_radius(matrix) -> float:
@@ -56,6 +60,10 @@ def _scalar_parameters(parameters: Dict[str, Any]) -> Dict[str, float]:
 
 def rate_parameters(expr: Any) -> Set[str]:
     """Names used in a rate (a parameter name or an expression)."""
+    from .expressions import Expression
+
+    if isinstance(expr, Expression):
+        return set(expr.names)
     if not isinstance(expr, str):
         return set()
     try:
@@ -66,6 +74,16 @@ def rate_parameters(expr: Any) -> Set[str]:
 
 
 def _rate_value(expr: Any, parameters: Dict[str, float]) -> float:
+    from .expressions import Expression
+
+    if isinstance(expr, Expression):
+        state = expr.names - set(parameters)
+        if state:
+            raise ValueError(
+                f"rate {expr.source!r} depends on {sorted(state)}, which change "
+                "during a run; R0 is defined for constant rates only"
+            )
+        return float(np.asarray(expr.evaluate(dict(parameters))).flat[0])
     if not isinstance(expr, str):
         return float(expr)
     if expr in parameters:
@@ -106,7 +124,13 @@ def infected_compartments_for(
 def compartment_roles(model_cfg: Dict[str, Any]) -> Dict[str, str]:
     """``{compartment: role}`` declared by a custom model config."""
     roles = {}
-    for entry in (model_cfg or {}).get("compartments") or []:
+    model_cfg = model_cfg or {}
+    block = (
+        model_cfg.get("custom")
+        if isinstance(model_cfg.get("custom"), dict)
+        else model_cfg
+    )
+    for entry in block.get("compartments") or []:
         if isinstance(entry, dict) and "name" in entry and entry.get("role"):
             roles[str(entry["name"])] = str(entry["role"])
     return roles
@@ -145,7 +169,7 @@ def disease_ngm(
     mediated_sources = [
         t.source
         for t in model.transitions_list
-        if t.kind == "mediated" and t.target in index and t.source not in index
+        if t.kind in MEDIATED_KINDS and t.target in index and t.source not in index
     ]
     if susceptible is None:
         if not mediated_sources:
@@ -153,12 +177,14 @@ def disease_ngm(
         susceptible = mediated_sources[0]
 
     for t in model.transitions_list:
-        if t.kind == "mediated":
+        if t.kind in MEDIATED_KINDS:
             rate, agent = t.params[0], t.params[1]
             if t.source == susceptible and t.target in index and agent in index:
                 F[index[t.target], index[agent]] += _rate_value(rate, params)
-        elif t.kind == "spontaneous" and t.source in index:
-            rate = _rate_value(t.params, params)
+        elif t.kind in SPONTANEOUS_KINDS and t.source in index:
+            rate = _rate_value(
+                t.params[0] if t.kind == "expression" else t.params, params
+            )
             i = index[t.source]
             V[i, i] += rate
             if t.target in index:
@@ -197,51 +223,78 @@ def solve_rate_for_r0(
 ) -> Dict[str, Any]:
     """The value of a transmission parameter that gives a target R0.
 
-    R0 must be proportional to the parameter (true when it scales every
-    infection rate, as ``transmission_rate`` does in the predefined models).
+    When R0 is proportional to the parameter (it scales every infection rate,
+    as ``transmission_rate`` does in the predefined models), ``value = R0 *
+    gamma / rho``. When other routes also transmit (R0 grows with the
+    parameter but does not vanish without it), the value is found by root
+    finding and ``gamma`` is None.
 
     Returns:
-        ``{"value", "rho", "gamma", "formula", "inputs"}``: ``value =
-        R0 * gamma / rho``, ``rho`` the spectral radius of the contact matrix,
-        ``gamma`` the effective removal rate, ``inputs`` the parameters
-        ``gamma`` depends on.
+        ``{"value", "rho", "gamma", "formula", "inputs"}``: ``rho`` the
+        spectral radius of the contact matrix, ``gamma`` the effective removal
+        rate, ``inputs`` the parameters the result depends on.
     """
     if not R0 > 0:
         raise ValueError(f"R0 must be positive, got {R0}")
     params = _scalar_parameters(model.parameters)
     infected = list(infected) if infected is not None else infected_compartments(model)
 
-    per_contact = []
-    for trial in (1.0, 2.0):
-        params[parameter] = trial
-        ngm = disease_ngm(model, infected, parameters=params)
-        per_contact.append(ngm["R0_per_contact"])
-    if per_contact[0] <= 0:
-        raise ValueError(f"R0 does not depend on '{parameter}'")
-    if not np.isclose(per_contact[1], 2 * per_contact[0], rtol=1e-9):
-        raise ValueError(
-            f"R0 is not proportional to '{parameter}'; it cannot be derived from R0"
-        )
+    def per_contact_at(value):
+        params[parameter] = value
+        return disease_ngm(model, infected, parameters=params)["R0_per_contact"]
 
     rho = spectral_radius(combined_contact_matrix(model.population, layers))
-    gamma = 1.0 / per_contact[0]
+    at_one, at_two = per_contact_at(1.0), per_contact_at(2.0)
+    if not at_two > at_one:
+        raise ValueError(
+            f"R0 does not grow with '{parameter}', so it cannot be derived from R0 "
+            "(derive a transmission rate)"
+        )
+    at_zero = per_contact_at(0.0)
+    ngm = disease_ngm(model, infected, parameters=params)
+    if at_zero == 0 and np.isclose(at_two, 2 * at_one, rtol=1e-9):
+        # R0 proportional to the parameter: the closed form.
+        gamma = 1.0 / at_one
+        value = R0 * gamma / rho
+        formula = f"{parameter} = R0 * gamma / rho(C)"
+    else:
+        # Other transmission routes contribute too (e.g. nosocomial spread);
+        # R0 still grows with the parameter, so solve for it.
+        from scipy.optimize import brentq
+
+        target = R0 / rho
+        if at_zero >= target:
+            raise ValueError(
+                f"R0 is {at_zero * rho:.4g} even with {parameter} = 0, so no value "
+                f"of {parameter} gives R0 = {R0}"
+            )
+        high = 1.0
+        while per_contact_at(high) < target:
+            high *= 2
+            if high > 1e9:
+                raise ValueError(f"no value of {parameter} reaches R0 = {R0}")
+        value = brentq(lambda x: per_contact_at(x) - target, 0.0, high, xtol=1e-14)
+        gamma = None
+        formula = f"{parameter} solves rho(C) * rho(F V^-1) = R0"
     infected_set = set(infected)
     inputs = set()
     for t in model.transitions_list:
-        if t.source in infected_set and t.kind == "spontaneous":
-            inputs |= rate_parameters(t.params)
+        if t.source in infected_set and t.kind in SPONTANEOUS_KINDS:
+            inputs |= rate_parameters(
+                t.params[0] if t.kind == "expression" else t.params
+            )
         if (
-            t.kind == "mediated"
+            t.kind in MEDIATED_KINDS
             and t.target in infected_set
             and t.source == ngm["susceptible"]
         ):
             inputs |= rate_parameters(t.params[0])
     inputs = sorted((inputs & set(params)) - {parameter})
     return {
-        "value": R0 * gamma / rho,
+        "value": float(value),
         "rho": rho,
         "gamma": gamma,
-        "formula": f"{parameter} = R0 * gamma / rho(C)",
+        "formula": formula,
         "inputs": inputs,
     }
 
