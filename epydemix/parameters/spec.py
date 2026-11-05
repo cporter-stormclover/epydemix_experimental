@@ -46,6 +46,14 @@ class ParameterSpec:
         depends_on: Names of other parameters this one is related to
             (e.g. ``recovery_rate`` depends on ``infectious_period``).
         tags: Freeform labels for filtering, e.g. ``["transmission", "SIR"]``.
+        precision: Significant figures a value of this parameter is known to.
+            Reports round the parameter (and quantities derived from it) to
+            this many figures. ``None`` leaves the choice to the reporter.
+        qualitative_bands: Ranges that words like "low" or "high" usually
+            mean for this parameter, e.g.
+            ``{"low": {"min": 0.001, "max": 0.002, "source": "..."}}``. Each
+            band must cite its ``source``; an optional ``note`` explains how
+            the source supports it.
     """
 
     name: str
@@ -60,6 +68,8 @@ class ParameterSpec:
     shape: str = "scalar"
     depends_on: List[str] = field(default_factory=list)
     tags: List[str] = field(default_factory=list)
+    precision: Optional[int] = None
+    qualitative_bands: Optional[Dict[str, Dict[str, Any]]] = None
 
     def __post_init__(self) -> None:
         if self.kind not in PARAMETER_KINDS:
@@ -81,6 +91,35 @@ class ParameterSpec:
             raise ValueError(
                 f"Parameter '{self.name}': min ({self.min}) > max ({self.max})"
             )
+        if self.precision is not None and (
+            not isinstance(self.precision, int)
+            or isinstance(self.precision, bool)
+            or self.precision < 1
+        ):
+            raise ValueError(
+                f"Parameter '{self.name}': precision must be a positive integer "
+                f"(significant figures), got {self.precision!r}"
+            )
+        for band, spec in (self.qualitative_bands or {}).items():
+            if not isinstance(spec, dict) or "min" not in spec or "max" not in spec:
+                raise ValueError(
+                    f"Parameter '{self.name}': band '{band}' needs 'min' and 'max'"
+                )
+            if spec["min"] > spec["max"]:
+                raise ValueError(
+                    f"Parameter '{self.name}': band '{band}' has min > max"
+                )
+            if not spec.get("source"):
+                raise ValueError(
+                    f"Parameter '{self.name}': band '{band}' must cite a 'source'"
+                )
+
+    def band_of(self, value: float) -> Optional[str]:
+        """Name of the qualitative band containing a value, if any."""
+        for band, spec in (self.qualitative_bands or {}).items():
+            if spec["min"] <= value <= spec["max"]:
+                return band
+        return None
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to a plain dictionary (JSON-safe)."""
@@ -104,6 +143,10 @@ class ParameterSpec:
             d["depends_on"] = self.depends_on
         if self.tags:
             d["tags"] = self.tags
+        if self.precision is not None:
+            d["precision"] = self.precision
+        if self.qualitative_bands:
+            d["qualitative_bands"] = self.qualitative_bands
         return d
 
     @classmethod
@@ -122,6 +165,8 @@ class ParameterSpec:
             shape=d.get("shape", "scalar"),
             depends_on=d.get("depends_on", []),
             tags=d.get("tags", []),
+            precision=d.get("precision"),
+            qualitative_bands=d.get("qualitative_bands"),
         )
 
     def to_json_schema_property(self) -> Dict[str, Any]:
@@ -139,6 +184,10 @@ class ParameterSpec:
             prop["minimum"] = self.min
         if self.max is not None:
             prop["maximum"] = self.max
+        if self.precision is not None:
+            prop["x-precision"] = self.precision
+        if self.qualitative_bands:
+            prop["x-qualitative-bands"] = self.qualitative_bands
         return prop
 
     def describe(self) -> str:
@@ -154,4 +203,10 @@ class ParameterSpec:
             parts.append(f"Default: {self.default}.")
         if self.shape != "scalar":
             parts.append(f"Shape: {self.shape}.")
+        if self.qualitative_bands:
+            bands = ", ".join(
+                f"{band} {spec['min']}-{spec['max']}"
+                for band, spec in self.qualitative_bands.items()
+            )
+            parts.append(f"Qualitative bands: {bands}.")
         return " ".join(parts)

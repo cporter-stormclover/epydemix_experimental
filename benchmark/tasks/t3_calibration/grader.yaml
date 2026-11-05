@@ -1,0 +1,7 @@
+checks:
+  - {name: recovery_rate, type: config_equals, bundle_type: CalibrationResults, path: parameters.recovery_rate, expect: 0.1, rtol: 0.001}
+  - {name: transmission_rate_estimate, type: metric_within, bundle_type: CalibrationResults, metric: posterior.transmission_rate.median, reference: 0.3, rtol: 0.1}
+  - {name: projected_peak, type: metric_within, command: project, metric: variables.Infected_total.peak.0.5, reference: "outputs/projection.epx", rtol: 0.2}
+  - {name: provenance, type: provenance_complete}
+  - {name: assumptions, type: assumptions_declared}
+  - {name: reports_transmission, type: report_mentions, pattern: "(?i)transmission"}

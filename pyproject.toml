@@ -83,7 +83,7 @@ testpaths = ["tests"]  # Directory containing tests
 [tool.ruff]
 # Ruff configuration
 line-length = 88
-exclude = ["**/*.ipynb"]
+exclude = ["**/*.ipynb", "**/*.md"]
 
 [tool.ruff.lint]
 select = [

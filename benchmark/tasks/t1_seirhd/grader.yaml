@@ -1,0 +1,11 @@
+checks:
+  - {name: community_transmission, type: config_equals, path: "transition:S->E@I", expect: 0.3, rtol: 0.01}
+  - {name: nosocomial_transmission, type: config_equals, path: "transition:S->E@H", expect: 0.05, rtol: 0.01}
+  - {name: hospitalization, type: config_equals, path: "transition:I->H", expect: 0.02, rtol: 0.05}
+  - {name: hospital_deaths, type: config_equals, path: "transition:H->D", expect: 0.025, rtol: 0.05}
+  - {name: peak_hospital_occupancy, type: metric_within, metric: variables.H_total.peak.0.5, reference: "outputs/seirhd.epx", rtol: 0.1}
+  - {name: total_deaths, type: metric_within, metric: variables.D_total.final.0.5, reference: "outputs/seirhd.epx", rtol: 0.1}
+  - {name: provenance, type: provenance_complete}
+  - {name: assumptions, type: assumptions_declared}
+  - {name: reports_peak, type: report_mentions, pattern: "(?i)peak"}
+  - {name: reports_deaths, type: report_mentions, pattern: "(?i)death"}

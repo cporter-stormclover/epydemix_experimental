@@ -1,10 +1,48 @@
 """Build manifest.json metadata from simulation and calibration results."""
 
+import uuid
 from datetime import datetime
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Dict, Optional
 
 import numpy as np
+
+# Version of the manifest layout. Readers accept every earlier version: keys are
+# only ever added. Manifests written before versioning have no schema_version
+# and are version 1.
+#   2: ``schema_version`` and a unique bundle ``id``; ``files.summary``
+#      (summary.json) in bundles written by the CLI.
+#   3: ``assumptions``, copied from the config.
+#   4: ``provenance`` extended: ``bundle_files`` and ``manifest_sha256``
+#      (content hashes), ``config_file_sha256``, ``population_data``,
+#      ``code``, ``environment``, ``contract_version``, ``agent``.
+#   5: ``model.type`` and ``model.infected_compartments``; ``derived``
+#      (resolved derived parameters, written by the CLI).
+MANIFEST_SCHEMA_VERSION = 5
+
+
+def _model_section(config: Optional[Dict], compartments) -> Dict[str, Any]:
+    """Compartments, model type and infected-type compartments."""
+    from ..model.reproduction import INFECTED_LIKE, infected_compartments_for
+
+    section: Dict[str, Any] = {"compartments": compartments}
+    if config and config.get("model"):
+        model_cfg = config["model"]
+        section["type"] = model_cfg.get("type", "custom")
+        infected = infected_compartments_for(model_cfg, compartments)
+    elif "Susceptible" in compartments:
+        # No config: the full names of the predefined models identify them.
+        infected = [c for c in compartments if c in INFECTED_LIKE]
+    else:
+        infected = None
+    if infected:
+        section["infected_compartments"] = infected
+    return section
+
+
+def _add_assumptions(manifest: Dict[str, Any], config: Optional[Dict]) -> None:
+    if config and config.get("assumptions"):
+        manifest["assumptions"] = config["assumptions"]
 
 
 def _get_version() -> str:
@@ -65,12 +103,12 @@ def build_simulation_manifest(
         ]
 
     manifest = {
+        "schema_version": MANIFEST_SCHEMA_VERSION,
+        "id": uuid.uuid4().hex,
         "type": "SimulationResults",
         "epydemix_version": _get_version(),
         "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
-        "model": {
-            "compartments": base_compartments,
-        },
+        "model": _model_section(config, base_compartments),
         "population": {
             "demographic_groups": demo_groups,
         },
@@ -134,6 +172,7 @@ def build_simulation_manifest(
             "path": "config.yaml",
             "description": "The configuration that produced this run.",
         }
+    _add_assumptions(manifest, config)
 
     # Add file sizes if available
     if file_sizes:
@@ -186,6 +225,8 @@ def build_calibration_manifest(
                 population_section["contact_layers"] = pop_cfg["contact_layers"]
 
     manifest = {
+        "schema_version": MANIFEST_SCHEMA_VERSION,
+        "id": uuid.uuid4().hex,
         "type": "CalibrationResults",
         "epydemix_version": _get_version(),
         "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
@@ -249,6 +290,7 @@ def build_calibration_manifest(
             "path": "config.yaml",
             "description": "The configuration that produced this run.",
         }
+    _add_assumptions(manifest, config)
 
     if file_sizes:
         for key, size in file_sizes.items():

@@ -7,6 +7,7 @@ from .bundle import (
     save_bundle,
 )
 from .inspect import compare_bundles, inspect_bundle
+from .summary import build_summary, load_summary, write_summary
 
 __all__ = [
     "save_bundle",
@@ -15,4 +16,7 @@ __all__ = [
     "add_figure_to_manifest",
     "inspect_bundle",
     "compare_bundles",
+    "build_summary",
+    "write_summary",
+    "load_summary",
 ]

@@ -1,0 +1,8 @@
+id: t1_seirhd
+title: SEIRHD with nosocomial transmission
+paper_task: T1
+description: >
+  A custom compartmental model: a latent stage, hospitalization, death, and
+  transmission from hospitalized patients as well as from the community.
+needs_population: false
+timeout_s: 3600

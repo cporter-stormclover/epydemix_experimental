@@ -1,0 +1,99 @@
+{
+ "_assumptions": {
+  "differing": [
+   {
+    "parameter": "str",
+    "values": {
+     "no_vaccination": {
+      "value": "number",
+      "basis": "str"
+     },
+     "low": {
+      "value": "number",
+      "basis": "str"
+     },
+     "moderate": {
+      "value": "number",
+      "basis": "str"
+     },
+     "high": {
+      "value": "number",
+      "basis": "str"
+     }
+    }
+   }
+  ],
+  "same": [
+   "str"
+  ],
+  "undeclared_differences": []
+ },
+ "no_vaccination": {
+  "attack_rate": {
+   "median": "number",
+   "ci90": [
+    "number"
+   ],
+   "units": "str",
+   "method": "str"
+  },
+  "peak": {
+   "median": "number",
+   "ci90": [
+    "number"
+   ],
+   "variable": "str"
+  }
+ },
+ "low": {
+  "attack_rate": {
+   "median": "number",
+   "ci90": [
+    "number"
+   ],
+   "units": "str",
+   "method": "str"
+  },
+  "peak": {
+   "median": "number",
+   "ci90": [
+    "number"
+   ],
+   "variable": "str"
+  }
+ },
+ "moderate": {
+  "attack_rate": {
+   "median": "number",
+   "ci90": [
+    "number"
+   ],
+   "units": "str",
+   "method": "str"
+  },
+  "peak": {
+   "median": "number",
+   "ci90": [
+    "number"
+   ],
+   "variable": "str"
+  }
+ },
+ "high": {
+  "attack_rate": {
+   "median": "number",
+   "ci90": [
+    "number"
+   ],
+   "units": "str",
+   "method": "str"
+  },
+  "peak": {
+   "median": "number",
+   "ci90": [
+    "number"
+   ],
+   "variable": "str"
+  }
+ }
+}

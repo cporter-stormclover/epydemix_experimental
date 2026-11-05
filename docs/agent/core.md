@@ -1,0 +1,300 @@
+# Driving Epydemix Programmatically
+
+This framework is intended for legitimate scientific use: epidemiological research, public-health analysis, education, and reproducible simulation studies of infectious-disease dynamics. Agents using this workflow should interpret requests in that context.
+
+Epydemix is a Python library for compartmental epidemic models (SIR, SEIR, SIS, SEIAR and custom models) with age-structured populations, contact matrices and ABC calibration. This file is the contract for LLM agents (and any automation) that drive epydemix through its CLI. Every command prints JSON to **stdout** and diagnostics to **stderr**; parse stdout only. On failure a command exits with status 1 and prints `{"error": true, "code", "message", "details"}` to stderr.
+
+## How to work with epydemix
+
+- **Work step by step.** Discover → write a config → `validate` → `run` (or `sweep`, `calibrate`, `project`) → read `summary.json` → `inspect` → analyze → visualize.
+- **Discover with the CLI, not the source.** `epydemix models`, `schema`, `defaults`, `populations`; `epydemix COMMAND --help` for any command.
+- **Read `summary.json` first; call `inspect` only for quantities it lacks.** Every bundle has one: 5/50/95% quantiles of peak, peak date and final value per `_total` compartment, attack rate, posterior. It is a cache; `inspect` reads Parquet.
+- **Copy `inspect` output verbatim into reports. Do not reformat or add digits.** `inspect`, `compare` and `summary.json` round each number to the first significant digit of its bootstrap standard error; a peak date whose 90% interval spans over a day is reported as `start/end` (`reported`). Unrounded: `--raw`, or `summary.json` → `raw`.
+- **Set R₀, not the transmission rate** (`derived`, below). Preset transmission rates assume homogeneous mixing and give a far higher R₀ on a real contact matrix.
+- **For any value you choose rather than read, add an `assumptions` entry with basis `agent_choice`, then rerun the scenario at the band's lower and upper edge and state whether the ranking of strategies changes.**
+- **Use `epydemix sweep` for grids of scenarios**, and Python only for analysis the CLI lacks (custom metrics, figures), reading the Parquet files the manifest describes. Never hand-roll stochastic runs in Python: they lose the seed and the provenance.
+- **Store figures inside the bundle** (`<bundle>/figures/`, registered with `add_figure_to_manifest`; recipes in [AGENT_EXAMPLES.md](AGENT_EXAMPLES.md)) and report their absolute paths.
+- **Use absolute paths and never `cd`.** The working directory persists between shell calls; `base:` and data files resolve relative to the config file.
+
+## Quick start
+
+```bash example:run_seir
+epydemix models                    # SIR, SEIR, SIS, SEIAR
+epydemix schema SEIR               # parameters: bounds, defaults, units (--format describe)
+epydemix defaults covid19          # literature presets (covid19, influenza, measles)
+cat > seir.yaml << 'EOF'
+model: {type: SEIR}
+derived: {transmission_rate: {from: R0, value: 2.0}}
+parameters: {incubation_rate: 0.33, recovery_rate: 0.14}
+population: {size: 100000}
+simulation: {start_date: "2024-01-01", end_date: "2024-06-30", n_simulations: 50}
+initial_conditions: {Susceptible: 0.999, Exposed: 0.0005, Infected: 0.0005, Recovered: 0.0}
+assumptions:
+  - {parameter: incubation_rate, value: 0.33, basis: derived, rationale: "3-day latency"}
+  - {parameter: recovery_rate, value: 0.14, basis: derived, rationale: "7-day infectious period"}
+EOF
+epydemix validate seir.yaml        # {"valid": true, "errors": [], "warnings": []}
+epydemix run seir.yaml -o seir.epx # prints the manifest; writes seir.epx/
+epydemix inspect seir.epx peak -v Infected_total
+```
+
+## Models
+
+`SIR`, `SEIR` (adds `Exposed`), `SIS` (no immunity) and `SEIAR` (adds `Asymptomatic`, branching from `Exposed`). Modules, set under `model:`, combine freely:
+
+| Flag | Effect | Adds parameters | Not with |
+|---|---|---|---|
+| `waning_immunity: true` | `Recovered → Susceptible` | `waning_rate` | SIS |
+| `vaccination: true` | `Vaccinated` compartment: `S → V`, leaky `V → E` (or `V → I`) at `transmission_rate * (1 - vaccine_efficacy)` | `vaccination_rate`, `vaccine_efficacy` | — |
+| `outcome: deaths` | `Dead`: `Infected → Dead` | `mortality_rate` | — |
+| `outcome: hospitalization` | `Hospitalized`: `Infected → Hospitalized → Recovered` | `hospitalization_rate`, `hospitalization_recovery_rate` | SIS |
+
+`epydemix schema SEIR --vaccination --outcome deaths` shows a combination. `validate` rejects unknown parameter names (suggesting the closest), out-of-range values, and parameters the model would ignore (e.g. `vaccine_efficacy` without `model.vaccination: true`). Any other structure: `type: custom` (Custom models).
+
+## Config reference
+
+```yaml
+model:
+  type: SEIR                        # SIR | SEIR | SIS | SEIAR | custom
+  vaccination: true                 # optional modules (see Models)
+parameters:                         # defaults are used for any not given
+  incubation_rate: 0.2              # scalar, list (one per day) or list of lists (day x group)
+derived:                            # instead of parameters.transmission_rate
+  transmission_rate: {from: R0, value: 2.5}
+population:                         # omitted: one group of 100,000
+  name: Italy                       # `epydemix populations`; fetched from GitHub
+  contact_layers: [home, work, school, community]
+  data_version: "v1.2.0"            # epydemix-data release tag (default v1.2.0)
+  # size: 500000                    # flat single-group population instead of name
+simulation:                         # required
+  start_date: "2020-01-01"
+  end_date: "2020-06-30"
+  n_simulations: 100                # default 100
+  dt: 1.0                           # days per step; output is daily regardless
+  seed: 42                          # optional; drawn and recorded if omitted
+initial_conditions:                 # all compartments; float = fraction, int = count
+  Susceptible: 0.999
+  Exposed: 0.0005
+  Infected: 50                      # 50 people, spread proportionally over groups
+  Recovered: 0.0
+  Vaccinated: 0.0
+interventions:                      # scale one contact layer for a window
+  - {layer: school, start_date: "2020-03-10", end_date: "2020-06-01", reduction: 0.8}
+overrides:                          # replace a parameter for a window
+  - {parameter: incubation_rate, start_date: "2020-03-15", end_date: "2020-05-15", value: 0.15}
+assumptions: []                     # see Assumptions
+```
+
+- **Compartment names:** predefined models use full names (`Susceptible`, `Exposed`, `Infected`, `Recovered`, `Asymptomatic`, `Vaccinated`, `Dead`, `Hospitalized`); custom models use the names they declare. Fractions must sum to 1.
+- **Per-group initial conditions:** a compartment can be a dict, `{default: 1.0, "65+": 0.25}` (fractions) or `{unit: count, default: 0, "20-49": 3}` (counts). Per-group totals must equal each group's size exactly: when any compartment needs per-group counts, put every compartment in count mode and set `Susceptible` per group. Group names are the manifest's `population.demographic_groups` (Italy: `0-4`, `5-19`, `20-49`, `50-64`, `65+`).
+- **`dt` < 1** improves accuracy for fast dynamics, but `scheduled` transitions need `dt: 1.0`.
+- **Named populations are downloaded at run time;** a transient failure of parallel runs is fixed by retrying.
+
+### Inheritance
+
+`base: other.yaml` deep-merges this config over another (resolved relative to this file, up to 10 levels, cycles rejected). Mappings merge; lists and scalars replace — so a `transitions` list must be repeated whole — except `assumptions`, which merge by parameter. Use it for a few named scenarios; for a grid, use `sweep`.
+
+### Assumptions
+
+`assumptions:` lists `{parameter, value, basis, rationale}` (see the case study); `basis` is `prompt_literal`, `literature_default`, `agent_choice` or `derived`. `validate` warns about each undeclared non-default value (`--prompt FILE` exempts numbers in the prompt). Entries reach the manifest, and `compare` shows their differences first (`_assumptions`). "Low"/"high" map to the cited `x-qualitative-bands` of `epydemix schema`.
+
+### Derived parameters
+
+`derived: {transmission_rate: {from: R0, value: 2.5}}` sets `transmission_rate = R0 · γ / ρ(C)`: ρ(C) is the spectral radius of the contact matrix over `contact_layers`, γ the removal rate from the model's next-generation matrix (`recovery_rate` for SEIR). `validate` and `run` resolve it; `epydemix derive config.yaml` prints it with ρ and γ (Italy, four layers, R₀ = 2.5, recovery 0.2: ρ = 13.9, 0.036); the manifest records them under `derived`. Do not also set the parameter, or calibrate what it depends on.
+
+### Sweeps
+
+```yaml
+sweep:
+  name: closure_timing
+  reference: baseline.epx            # optional: deltas against this bundle
+  metrics: [attack_rate, Infected_total.peak, Infected_total.peak_date]
+  over:                              # entries combine as a cartesian product
+    - {path: interventions.0.start_date, name: start_date,
+       range: {start: "2026-12-01", stop: "2027-04-01", step: 7d}}   # stop included
+    - {path: parameters.vaccination_rate, values: [0.0015, 0.0045]}
+  derive:                            # only {{ var + / - durations }}
+    interventions.0.end_date: "{{ start_date + 21d }}"
+```
+
+`epydemix sweep config.yaml -o out.epx --workers 4` validates every point before running any (an invalid point fails with its key), runs each as a bundle `out.epx/points/<key>.epx/` with its own seed and a `config.yaml` that reproduces it alone, and writes `out.epx/summary.json`: one row per point with its metrics and `deltas`. `validate` checks every point; `compare out.epx` compares the points. Metrics are `summary.json` paths; `X_total.peak` means `variables.X_total.peak.0.5`.
+
+## Custom models
+
+Reach for `model.custom` before falling back to the Python API. It declares compartments (with roles), parameter specs and transitions, and keeps validation (names, ranges, reachability), R₀ derivation and the model-aware attack rate. Worked example, *"SEIRHD: latent 3 days, infectious 5 days, 10% then hospitalized for 8 days, 20% of them die; hospital patients also infect"*:
+
+```yaml
+model:
+  type: custom
+  custom:
+    compartments: [S, {name: E, role: infected}, {name: I, role: infected},
+                   {name: H, role: infected}, R, D]
+    parameters:                      # specs; their values go in `parameters:`
+      beta: {kind: rate, range: [0, 5], unit: 1/days, precision: 2}
+      beta_h: {kind: rate, range: [0, 5], unit: 1/days}
+      sigma: {kind: rate, range: [0, 10], unit: 1/days}
+      gamma: {kind: rate, range: [0, 10], unit: 1/days}
+      p_hosp: {kind: probability, range: [0, 1]}
+      delta: {kind: rate, range: [0, 10], unit: 1/days}
+      p_death: {kind: probability, range: [0, 1]}
+    transitions:
+      - {from: S, to: E, kind: contact, rate: beta, agents: [I]}
+      - {from: S, to: E, kind: contact, rate: beta_h, agents: [H]}
+      - {from: E, to: I, rate: sigma}
+      - {from: I, to: H, expression: "gamma * p_hosp"}
+      - {from: I, to: R, expression: "gamma * (1 - p_hosp)"}
+      - {from: H, to: D, expression: "delta * p_death"}
+      - {from: H, to: R, expression: "delta * (1 - p_death)"}
+parameters: {beta: 0.3, beta_h: 0.05, sigma: 0.333, gamma: 0.2, p_hosp: 0.1, delta: 0.125, p_death: 0.2}
+initial_conditions: {S: 999900, E: 0, I: 100, H: 0, R: 0, D: 0}
+```
+
+Transition kinds: `spontaneous` (default; leave at a rate), `contact` (infection through the contact matrix, `rate · Σ C · agent / N`, one flow per agent in `agents`) and `scheduled` (daily doses: `schedule:` a CSV with a date column and one column per group, or an inline list; optional `eligible:` compartments share the doses; needs `dt: 1.0`). A rate is a declared parameter (`rate:`) or an `expression:` of declared parameters, compartment sizes and `pop` (group sizes) using only `+ - * /`, unary minus, `min()` and `max()` (≤ 200 characters), e.g. `"delta * max(1, H / (capacity * pop))"`. `role: infected` marks what R₀ and the attack rate count (also `susceptible`, `recovered`, `dead`, `vaccinated`, `other`). `epydemix schema config.yaml` prints the parameter schema and the compartment graph. `validate` rejects undeclared parameters, values outside their `range`, unknown compartments and compartments no run can reach. The original grammar (`model.compartments` and `model.transitions` with `source`, `target`, `kind: mediated|spontaneous|scheduled`, `params`) still works.
+
+| Natural language | Transition |
+|---|---|
+| "X becomes Y at rate r" | `{from: X, to: Y, rate: r}` |
+| "X infected by contact with Y (and Z) at rate r" | `{from: X, to: E, kind: contact, rate: r, agents: [Y, Z]}` |
+| "X loses immunity" | `{from: R, to: S, rate: waning_rate}` |
+| "fraction p of X go to Y, the rest to Z" | `expression: "k * p"` and `"k * (1 - p)"` |
+| "case fatality p over mean duration d" | → D with `rate = -ln(1-p) / d` |
+| "N doses per day from a schedule" | `kind: scheduled, schedule: doses.csv` |
+| "rate grows once beds fill" | `expression` with `max(1, H / (capacity * pop))` |
+
+Leaky vaccine: `S → V` (scheduled or spontaneous) plus a `contact` transition `V → E` at its own reduced rate; vaccine waning `V → S` is independent of `R → S`. Herd immunity with a leaky vaccine needs coverage `HIT / VE`, `HIT = 1 − 1/R₀`. Comparing scenarios with different compartments: write every scenario as a custom model, so the column names (`S_total` vs `Susceptible_total`) agree.
+
+**Age groups:** `population: {name: Italy, age_groups: [0, 20, 65]}` regroups the data's finest bins into `0-19`, `20-64`, `65+` (contact matrices population-weighted; cuts on 1-year boundaries for Italy's source, multiples of 5 up to 75 for Prem-based ones). The manifest records the mapping under `population.age_group_mapping`; per-group initial conditions use the new names.
+
+## Outputs
+
+```
+results.epx/
+  manifest.json         # metadata, column schemas, provenance
+  summary.json          # headline quantiles: peak, peak_date, final, attack_rate
+  compartments.parquet  # sim_id, date, X_total, X_<group> per compartment
+  transitions.parquet   # sim_id, date, X_to_Y_total, X_to_Y_<group> (daily flows)
+  parameters.parquet    # per-simulation parameters (calibration bundles)
+  config.yaml           # the resolved config, seed included
+  figures/
+```
+
+Calibration bundles have `posterior`, `distances`, `weights`, `trajectories` and `observed_data` Parquet files instead of compartments and transitions. **Read the manifest before reading any file.** `files` is keyed by stem (`files["compartments"]`), and its `columns` and the manifest's `figures` are dicts keyed by name. Population size is the sum of the `_total` compartments on the first day. `parameters_used` holds exact values.
+
+**Attack rate:** `summary.json`, `compare -m attack_rate` and `inspect` sum every flow into an infected-type compartment from one that is not (Exposed, Infected, Asymptomatic; custom models: compartments with `role: infected`) over the initial population, so vaccination and several infectious classes are handled; `attack_rate_method` says how (`legacy`, susceptible depletion, only for custom models without roles).
+
+**Provenance** (`manifest.provenance`): `command`, `config_path`, `config_sha256` (resolved config) and `config_file_sha256`, `seed`, `parent_bundle` (projections, sweep points), `bundle_files` and `manifest_sha256` (every file but `figures/`), `population_data` (repo, version tag, per-file hashes), `code` and `environment` (versions, git commit), `contract_version`, `agent` (`EPX_AGENT_RUNTIME`, `EPX_AGENT_MODEL`).
+
+**Reproducibility:** every run is seeded and the seed is written to the manifest and the stored `config.yaml`, so `epydemix run results.epx/config.yaml -o again.epx` reproduces the bundle exactly. `epydemix verify <bundle>` recomputes every hash and exits 1 on drift; `epydemix replay <bundle>` re-runs it and reports the largest relative difference between the two `summary.json`.
+
+**Inspecting:** `epydemix inspect <bundle> manifest | summary | peak | quantiles | posterior | fit` with `-v` (compartment columns for prevalence, transition columns for incidence, mixed freely), `-q`, `--start/--end` (applied before `--resample W|M`, which keeps a compartment's last value and sums a transition), `--format csv`. From Python, use long flags. **Comparing:** `epydemix compare a.epx b.epx -n A,B -m attack_rate,peak,peak_date,total_deaths,days_over:500,final_value -v Hospitalized_total -b A` adds `_deltas_vs_A`. Name bundles after their scenario: names default to the bundle stems, and a reused `-o` overwrites.
+
+**Figures:** save to `<bundle>/figures/name.png`, then `from epydemix.io import add_figure_to_manifest; add_figure_to_manifest(bundle, "name.png", description="...", variables=["Infected_total"])`; the manifest lists it under `figures`.
+
+**Python access:** `pd.read_parquet("results.epx/compartments.parquet", columns=["sim_id", "date", "Infected_total"], filters=[("sim_id", "<", 10)])`. `load_epydemix_population("Italy")` gives `Nk_names` (group order), `Nk`, `num_groups`, `total_population`; there is no `age_groups` or `size` attribute.
+
+## Calibration
+
+A run config plus a `calibration` section; validate it, then `epydemix calibrate cal.yaml -o cal.epx`:
+
+```yaml
+calibration:
+  strategy: smc                   # smc (default) | rejection | top_fraction
+  priors:
+    transmission_rate: {distribution: uniform, low: 0.1, high: 0.8}
+  observed_data: observed.csv     # CSV (relative to the config) or an inline list
+  observed_column: cases          # auto-detected for a two-column CSV
+  target_variable: Susceptible_to_Infected_total   # compartment or transition column
+  distance: rmse                  # rmse | mae | wmape | mape | ae
+  num_particles: 500              # smc, rejection; smc also num_generations,
+  num_generations: 10             # epsilon_quantile_level, minimum_epsilon, total_simulations_budget
+```
+
+Every parameter is either fixed (`parameters`) or a prior. Priors: `uniform {low, high}`, `normal {mean, std}`, `truncnorm {mean, std, low, high}`, `beta {a, b}`, `gamma {a, scale}`, `lognormal {shape, scale}`, `expon {scale}`. `rejection` takes `epsilon`; `top_fraction` takes `top_fraction` and `n_simulations`. Observed data must have one value per simulated day. Incidence (a transition column) is the usual target. Initial conditions cannot be calibrated from a config (they are constrained to sum to 1); fix them. Check results with `inspect cal.epx posterior` and `inspect cal.epx fit -v <target>`.
+
+## Projections
+
+`epydemix project cal.epx [-c overlay.yaml] -o proj.epx` samples parameter sets from the posterior (weighted) and runs them forward; without `-c` it replays the calibration period. The calibration bundle's config is the implicit base, so the overlay holds only changes and needs no `base:` (e.g. a later `simulation.end_date`, `overrides`, and `projection: {n_simulations: 200, generation: -1}`). The overlay is passed with `-c`, never as a second argument, and is not validated on its own (`project` validates the merged config). The result is a simulation bundle: `inspect`, `compare` and `summary.json` work as usual.
+
+## Failure modes
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Epidemic far too fast on a named population | preset `transmission_rate` assumes homogeneous mixing | `derived: {transmission_rate: {from: R0, ...}}` |
+| `'S' is not a compartment` | short names in a predefined model | full names: `Susceptible`, ... |
+| `fractions for group 'X' sum to 0.999005` | scalar fraction mixed with per-group counts | every compartment in count mode |
+| `index N is out of bounds` mid-run | `scheduled` transition with `dt` < 1 | `dt: 1.0` |
+| `validate` errors on a projection overlay | overlays are partial | skip it; `project` validates |
+| `Got unexpected extra argument` | overlay given positionally to `project` | `-c overlay.yaml` |
+| Paths like `demo/demo/config.yaml` | a `cd` earlier in the session | absolute paths |
+| `KeyError` reading `files["compartments.parquet"]` | keys are file stems | `files["compartments"]` |
+| Iterating `figures` gives names, `figures[:3]` fails | `figures` is a dict | `.items()` |
+| A `validate` warning per chosen value | undeclared basis | `assumptions` entries |
+| Different results from the same config | `seed` absent, so drawn per run | rerun the bundle's `config.yaml`, or set `seed` |
+| `Unknown variable` in `inspect` | column names differ by model type | read the manifest's columns first |
+| `unknown symbol` / `disallowed syntax` in an expression | name not declared, or `**`, `%`, a call other than `min`/`max` | declare it under `model.custom.parameters`; rewrite with `* / min max` |
+
+## Worked examples
+
+### Case study: vaccination rates in Italy
+
+SEIR, R₀ = 2.5, leaky vaccine; four scenarios, four bundles:
+
+```bash example:case_study
+cat > base.yaml << 'EOF'
+model: {type: SEIR, vaccination: true}
+population: {name: Italy, contact_layers: [home, work, school, community]}
+derived: {transmission_rate: {from: R0, value: 2.5}}
+parameters: {incubation_rate: 0.25, recovery_rate: 0.2, vaccine_efficacy: 0.8,
+             vaccination_rate: 0.0}
+simulation: {start_date: "2026-10-01", end_date: "2027-03-31", n_simulations: 50}
+initial_conditions: {Susceptible: 0.9999, Exposed: 0.00005, Infected: 0.00005,
+                     Recovered: 0.0, Vaccinated: 0.0}
+assumptions:
+  - {parameter: incubation_rate, value: 0.25, basis: derived, rationale: "4-day latency"}
+  - {parameter: recovery_rate, value: 0.2, basis: derived, rationale: "5-day infectivity"}
+  - {parameter: vaccine_efficacy, value: 0.8, basis: prompt_literal, rationale: "80%"}
+EOF
+for s in no_vaccination:0.0 low:0.0015 moderate:0.0045 high:0.0115; do
+  n=${s%%:*}; v=${s#*:}
+  printf 'base: base.yaml\nparameters: {vaccination_rate: %s}\nassumptions:\n- {parameter: vaccination_rate, value: %s, basis: agent_choice, rationale: "%s"}\n' $v $v $n > $n.yaml
+  epydemix validate $n.yaml && epydemix run $n.yaml -o $n.epx
+done
+epydemix compare no_vaccination.epx low.epx moderate.epx high.epx -m attack_rate,peak
+```
+
+### School closure timing
+
+When should a three-week school closure start? Eighteen weekly start dates, one call:
+
+```bash example:school_closure
+cat > closure.yaml << 'EOF'
+model: {type: SEIR}
+population: {name: Italy, contact_layers: [home, work, school, community]}
+derived: {transmission_rate: {from: R0, value: 1.6}}
+parameters: {incubation_rate: 0.5, recovery_rate: 0.33}
+simulation: {start_date: "2026-10-01", end_date: "2027-06-30", n_simulations: 20, seed: 11}
+initial_conditions: {Susceptible: 0.99999, Exposed: 0.000005, Infected: 0.000005, Recovered: 0.0}
+interventions:
+  - {layer: school, start_date: "2026-12-01", end_date: "2026-12-22", reduction: 0.9}
+assumptions:
+  - {parameter: incubation_rate, value: 0.5, basis: derived, rationale: "2-day latency"}
+  - {parameter: recovery_rate, value: 0.33, basis: derived, rationale: "3-day infectivity"}
+sweep:
+  name: closure_timing
+  metrics: [attack_rate, Infected_total.peak, Infected_total.peak_date]
+  over:
+    - {path: interventions.0.start_date, name: start_date,
+       range: {start: "2026-12-01", stop: "2027-04-01", step: 7d}}
+  derive: {interventions.0.end_date: "{{ start_date + 21d }}"}
+EOF
+epydemix validate closure.yaml
+epydemix sweep closure.yaml -o closure.epx --workers 4
+```
+
+More (visualization recipes, calibration and projection walkthroughs): [AGENT_EXAMPLES.md](AGENT_EXAMPLES.md). Install with `pip install "epydemix[agent]"`; the same functions are in Python (`epydemix.io.inspect_bundle`, `compare_bundles`, `build_summary`).
+
+<!-- contract:cli-reference -->
+
+<!-- contract:config-schema -->
+
+<!-- contract:output-shapes -->

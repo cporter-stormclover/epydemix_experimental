@@ -1,0 +1,8 @@
+id: case_study_vaccination
+title: Vaccination campaigns in Italy (case study)
+paper_task: case study
+description: >
+  The vaccination case study of AGENT.md: qualitative vaccination rates to be
+  mapped to values, compared, and checked for robustness.
+needs_population: true
+timeout_s: 3600

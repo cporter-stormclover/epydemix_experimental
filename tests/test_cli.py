@@ -1464,7 +1464,8 @@ class TestCLICompare:
         bundle = _make_bundle(tmp_path, "r.epx")
         var = "Susceptible_to_Infected_total"
         result = CliRunner().invoke(
-            cli, ["compare", bundle, "-m", "peak,peak_date,final_value", "-v", var]
+            cli,
+            ["compare", bundle, "-m", "peak,peak_date,final_value", "-v", var, "--raw"],
         )
         assert result.exit_code == 0, result.output
         data = json.loads(result.output)["r"]

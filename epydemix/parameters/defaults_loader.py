@@ -67,6 +67,7 @@ class DefaultParameterSet:
                 max=rng[1] if len(rng) > 1 else None,
                 units=info.get("units"),
                 tags=list(tags) if tags else [],
+                precision=info.get("precision"),
             )
             specs.append(spec)
         return specs

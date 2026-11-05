@@ -378,22 +378,10 @@ epydemix run seiar.yaml -o seiar.epx
 # Compare symptomatic vs asymptomatic prevalence at peak
 epydemix inspect seiar.epx peak -v Infected_total,Asymptomatic_total
 
-# Compute attack rate from S depletion. Do NOT sum
-# Susceptible_to_Exposed_total here — SEIAR has two S→E mediated transitions
-# (one via Infected, one via Asymptomatic) and the framework sums them into
-# a single column, double-counting the actual flow. S depletion is unambiguous
-# since no S→V vaccination transition is present.
-python - << 'PY'
-import pandas as pd
-comp = pd.read_parquet("seiar.epx/compartments.parquet",
-                       columns=["sim_id", "date", "Susceptible_total"])
-N = 100000
-S0 = comp.groupby("sim_id")["Susceptible_total"].first()
-Sf = comp.groupby("sim_id")["Susceptible_total"].last()
-attack = (S0 - Sf) / N * 100
-print(f"Attack rate: median={attack.median():.1f}%  "
-      f"[{attack.quantile(0.05):.1f}%, {attack.quantile(0.95):.1f}%]")
-PY
+# Attack rate: summary.json and compare count the infection flows. Both S→E
+# routes (via Infected and via Asymptomatic) are merged into one
+# Susceptible_to_Exposed_total column, counted once.
+epydemix compare seiar.epx -m attack_rate
 ```
 
 ### Example 7: Modular composition — endemic disease with hospitalization

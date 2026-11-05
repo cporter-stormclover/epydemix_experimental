@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from .semantic import SemanticCheck
 from .spec import ParameterSpec
 
 
@@ -62,6 +63,24 @@ class ParameterRegistry:
 
     def __init__(self) -> None:
         self._specs: Dict[str, ParameterSpec] = {}
+        self.semantic_checks: List[SemanticCheck] = []
+
+    def add_semantic_check(self, check: SemanticCheck) -> None:
+        """Register a cross-parameter rule (replaces one with the same name)."""
+        self.semantic_checks = [c for c in self.semantic_checks if c.name != check.name]
+        self.semantic_checks.append(check)
+
+    def check_config(self, config: Dict[str, Any]) -> Dict[str, List[str]]:
+        """Evaluate every semantic check against a config.
+
+        Returns:
+            ``{"errors": [...], "warnings": [...]}``.
+        """
+        result: Dict[str, List[str]] = {"errors": [], "warnings": []}
+        for check in self.semantic_checks:
+            key = "errors" if check.severity == "error" else "warnings"
+            result[key].extend(check.evaluate(config))
+        return result
 
     def register(self, spec: ParameterSpec) -> None:
         """Register a parameter specification.
@@ -239,6 +258,8 @@ class ParameterRegistry:
             schema["title"] = title
         if required:
             schema["required"] = required
+        if self.semantic_checks:
+            schema["x-semantic-checks"] = [c.to_dict() for c in self.semantic_checks]
 
         return schema
 

@@ -624,6 +624,51 @@ def validate_age_group_mapping(
         raise ValueError(f"Age group mapping values must be in {allowed_values}")
 
 
+def _fine_age_bins(contacts_source: str) -> List[tuple]:
+    """``[(name, lower age)]`` of the finest bins a contact source provides."""
+    if contacts_source in ("prem_2017", "prem_2021", "litvinova_2025"):
+        return [
+            (name, int(name.split("-")[0].rstrip("+")))
+            for name in demographic_grouping_prem
+        ]
+    return [(str(age), age) for age in range(84)] + [("84+", 84)]
+
+
+def age_group_mapping_from_cuts(
+    cuts: List[int], contacts_source: str
+) -> Dict[str, List[str]]:
+    """Age groups from cut points, as a mapping onto a source's finest bins.
+
+    ``[0, 20, 65]`` gives the groups ``0-19``, ``20-64`` and ``65+``. Every cut
+    must fall on a bin boundary of the contact source (whole years for
+    ``mistry_2021``; multiples of 5 up to 75 for the Prem-based sources).
+    The result can be passed to :func:`load_epydemix_population` as
+    ``age_group_mapping``; contact matrices are then aggregated with
+    population weights.
+
+    Raises:
+        ValueError: if the cuts are not increasing from 0 or do not fall on
+            bin boundaries.
+    """
+    bins = _fine_age_bins(contacts_source)
+    lowers = [low for _, low in bins]
+    if not cuts or cuts[0] != 0 or any(a >= b for a, b in zip(cuts, cuts[1:])):
+        raise ValueError(f"age group cuts must increase from 0, got {cuts}")
+    off = [c for c in cuts if c not in lowers]
+    if off:
+        raise ValueError(
+            f"age group cuts {off} do not fall on a bin boundary of {contacts_source}; "
+            f"boundaries: {lowers[0]}, {lowers[1]}, ..., {lowers[-1]}"
+        )
+    mapping: Dict[str, List[str]] = OrderedDict()
+    edges = list(cuts) + [None]
+    for lo, hi in zip(edges, edges[1:]):
+        members = [name for name, low in bins if low >= lo and (hi is None or low < hi)]
+        label = f"{lo}+" if hi is None else f"{lo}-{hi - 1}"
+        mapping[label] = members
+    return mapping
+
+
 def load_epydemix_population(
     population_name: str,
     contacts_source: Optional[str] = None,

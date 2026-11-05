@@ -1,0 +1,28 @@
+{
+ "bundle": "str",
+ "schema_version": "number",
+ "type": "str",
+ "name": "str",
+ "n_points": "number",
+ "variables": [
+  "str"
+ ],
+ "metrics": [
+  "str"
+ ],
+ "points": [
+  {
+   "key": "str",
+   "variables": {
+    "start_date": "str"
+   },
+   "bundle": "str",
+   "seed": "number",
+   "metrics": {
+    "attack_rate": "number",
+    "Infected_total.peak": "number",
+    "Infected_total.peak_date": "str"
+   }
+  }
+ ]
+}

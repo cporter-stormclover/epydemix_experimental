@@ -6,6 +6,7 @@ extension (waning immunity, vaccination, outcome). These are registered
 automatically when a predefined model is created.
 """
 
+from .semantic import SemanticCheck
 from .spec import ParameterSpec
 
 
@@ -27,6 +28,7 @@ def sir_specs(
             min=0,
             max=10,
             units="1/days",
+            precision=2,
             tags=["transmission", "SIR"],
         ),
         ParameterSpec(
@@ -41,6 +43,7 @@ def sir_specs(
             min=0,
             max=10,
             units="1/days",
+            precision=2,
             tags=["recovery", "SIR"],
         ),
     ]
@@ -65,6 +68,7 @@ def seir_specs(
             min=0,
             max=10,
             units="1/days",
+            precision=2,
             tags=["transmission", "SEIR"],
         ),
         ParameterSpec(
@@ -79,6 +83,7 @@ def seir_specs(
             min=0,
             max=10,
             units="1/days",
+            precision=2,
             tags=["incubation", "SEIR"],
         ),
         ParameterSpec(
@@ -93,6 +98,7 @@ def seir_specs(
             min=0,
             max=10,
             units="1/days",
+            precision=2,
             tags=["recovery", "SEIR"],
         ),
     ]
@@ -117,6 +123,7 @@ def sis_specs(
             min=0,
             max=10,
             units="1/days",
+            precision=2,
             tags=["transmission", "SIS"],
         ),
         ParameterSpec(
@@ -131,6 +138,7 @@ def sis_specs(
             min=0,
             max=10,
             units="1/days",
+            precision=2,
             tags=["recovery", "SIS"],
         ),
     ]
@@ -159,6 +167,7 @@ def seiar_specs(
             min=0,
             max=10,
             units="1/days",
+            precision=2,
             tags=["transmission", "SEIAR"],
         ),
         ParameterSpec(
@@ -174,6 +183,7 @@ def seiar_specs(
             min=0,
             max=10,
             units="1/days",
+            precision=2,
             tags=["incubation", "SEIAR"],
         ),
         ParameterSpec(
@@ -187,6 +197,7 @@ def seiar_specs(
             min=0,
             max=10,
             units="1/days",
+            precision=2,
             tags=["recovery", "SEIAR"],
         ),
         ParameterSpec(
@@ -201,6 +212,7 @@ def seiar_specs(
             min=0,
             max=1,
             units="dimensionless",
+            precision=2,
             tags=["SEIAR"],
         ),
         ParameterSpec(
@@ -215,6 +227,7 @@ def seiar_specs(
             min=0,
             max=10,
             units="1/days",
+            precision=2,
             tags=["recovery", "SEIAR"],
         ),
         ParameterSpec(
@@ -230,6 +243,7 @@ def seiar_specs(
             min=0,
             max=1,
             units="dimensionless",
+            precision=2,
             tags=["transmission", "SEIAR"],
         ),
     ]
@@ -250,9 +264,48 @@ def waning_immunity_specs(waning_rate: float = 1.0 / 365) -> list:
             min=0,
             max=1,
             units="1/days",
+            precision=2,
             tags=["waning", "module"],
         ),
     ]
+
+
+# Qualitative vaccination paces. Paltiel et al. (2021) model the pace of a
+# COVID-19 vaccination campaign as the share of the population vaccinated per
+# day: base case 0.5%/day (the daily share reached in US influenza vaccination
+# campaigns), range 0.1-2.0%/day, with ~0.1%/day the pace of the early US
+# rollout and ~1%/day the pace hoped for. Their pace counts doses against the
+# whole population; vaccination_rate applies to the susceptible compartment,
+# so the two coincide only while nearly everyone is susceptible.
+_PALTIEL_2021 = (
+    "Paltiel AD, Schwartz JL, Zheng A, Walensky RP. Clinical outcomes of a "
+    "COVID-19 vaccine: implementation over efficacy. Health Affairs "
+    "2021;40(1):42-52. doi:10.1377/hlthaff.2020.02054"
+)
+VACCINATION_RATE_BANDS = {
+    "low": {
+        "min": 0.001,
+        "max": 0.002,
+        "source": _PALTIEL_2021,
+        "note": "~0.1%/day: the early US COVID-19 rollout, the low end of the "
+        "range modelled. Band edges are this package's reading of the source.",
+    },
+    "moderate": {
+        "min": 0.003,
+        "max": 0.006,
+        "source": _PALTIEL_2021,
+        "note": "0.5%/day base case, the daily share reached in US influenza "
+        "vaccination. Band edges are this package's reading of the source.",
+    },
+    "high": {
+        "min": 0.008,
+        "max": 0.015,
+        "source": _PALTIEL_2021,
+        "note": "~1%/day, the pace hoped for in the US COVID-19 rollout, within "
+        "the 2%/day upper end of the range modelled. Band edges are this "
+        "package's reading of the source.",
+    },
+}
 
 
 def vaccination_specs(
@@ -272,7 +325,9 @@ def vaccination_specs(
             min=0,
             max=1,
             units="1/days",
+            precision=2,
             tags=["vaccination", "module"],
+            qualitative_bands=VACCINATION_RATE_BANDS,
         ),
         ParameterSpec(
             name="vaccine_efficacy",
@@ -288,6 +343,7 @@ def vaccination_specs(
             min=0,
             max=1,
             units="dimensionless",
+            precision=2,
             tags=["vaccination", "module"],
         ),
     ]
@@ -315,6 +371,7 @@ def outcome_specs(
                 min=0,
                 max=1,
                 units="dimensionless",
+                precision=2,
                 tags=["outcome", "deaths", "module"],
             ),
         ]
@@ -333,6 +390,7 @@ def outcome_specs(
                 min=0,
                 max=1,
                 units="dimensionless",
+                precision=2,
                 tags=["outcome", "hospitalization", "module"],
             ),
             ParameterSpec(
@@ -346,12 +404,61 @@ def outcome_specs(
                 min=0,
                 max=10,
                 units="1/days",
+                precision=2,
                 tags=["outcome", "hospitalization", "module"],
             ),
         ]
     raise ValueError(
         f"Unknown outcome '{outcome}'. Supported values: 'deaths', 'hospitalization'."
     )
+
+
+def default_semantic_checks() -> list:
+    """Cross-parameter rules for configs of the predefined models."""
+    module_rules = [
+        ("vaccination_rate", "model.vaccination", True, "vaccination"),
+        ("waning_rate", "model.waning_immunity", True, "waning immunity"),
+        ("mortality_rate", "model.outcome", "deaths", "the deaths outcome"),
+        (
+            "hospitalization_rate",
+            "model.outcome",
+            "hospitalization",
+            "the hospitalization outcome",
+        ),
+    ]
+    checks = [
+        SemanticCheck(
+            name=f"{parameter}_requires_module",
+            rule="requires",
+            parameter=parameter,
+            greater_than=0.0,
+            requires={path: value},
+            message=f"a positive {parameter} has no effect without {label}",
+        )
+        for parameter, path, value, label in module_rules
+    ]
+    checks += [
+        SemanticCheck(
+            name=f"{section}_dates_ordered",
+            rule="ordered_dates",
+            section=section,
+            message="A window that ends before it starts has no effect.",
+        )
+        for section in ("interventions", "overrides")
+    ]
+    checks.append(
+        SemanticCheck(
+            name="derived_r0_plausible",
+            rule="range",
+            severity="warning",
+            quantity="derived.*.value",
+            min=0.5,
+            max=30.0,
+            message="an R0 outside [0.5, 30] is implausible for a human "
+            "infectious disease; check the value",
+        )
+    )
+    return checks
 
 
 # Map of model name → spec factory function

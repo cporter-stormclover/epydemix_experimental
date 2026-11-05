@@ -1,0 +1,10 @@
+checks:
+  - {name: r0, type: config_equals, path: r0, expect: 2.0, rtol: 0.02}
+  - {name: asymptomatic_fraction, type: config_equals, path: parameters.asymptomatic_fraction, expect: 0.4, rtol: 0.001}
+  - {name: relative_infectivity, type: config_equals, path: parameters.asymptomatic_relative_infectivity, expect: 0.5, rtol: 0.001}
+  - {name: asymptomatic_recovery, type: config_equals, path: parameters.asymptomatic_recovery_rate, expect: 0.142857, rtol: 0.01}
+  - {name: attack_rate, type: metric_within, metric: attack_rate.0.5, reference: "outputs/seiar.epx", rtol: 0.05}
+  - {name: asymptomatic_peak, type: metric_within, metric: variables.Asymptomatic_total.peak.0.5, reference: "outputs/seiar.epx", rtol: 0.1}
+  - {name: provenance, type: provenance_complete}
+  - {name: assumptions, type: assumptions_declared}
+  - {name: reports_attack_rate, type: report_mentions, pattern: "(?i)attack rate"}

@@ -1,0 +1,9 @@
+id: selftest
+title: SIR peak (harness self-test)
+paper_task: null
+description: >
+  A small public task with a public reference, used by CI to test the
+  harness itself. Not part of the scored benchmark.
+needs_population: false
+public_reference: true
+timeout_s: 600

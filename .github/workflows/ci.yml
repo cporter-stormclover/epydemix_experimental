@@ -39,6 +39,28 @@ jobs:
         run: pip install ".[docs]"
       - name: Build documentation
         run: sphinx-build -b html -W --keep-going docs/source docs/build/html
+  contract:
+    # AGENT.md is generated from docs/agent/core.md and the code: rebuild it,
+    # fail if the committed copy differs, and run its worked examples.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[agent]"
+          pip install pytest pytest-cov
+      - name: Build the agent contract
+        run: python tools/build_contract.py
+      - name: Check that AGENT.md is up to date
+        run: git diff --exit-code AGENT.md epydemix/_contract.py
+      - name: Run the contract tests and worked examples
+        run: pytest tests/test_contract.py tests/test_contract_examples.py --no-cov
   test:
     needs: lint
     strategy:
