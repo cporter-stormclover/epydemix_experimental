@@ -56,6 +56,16 @@ To run the tests, use the following command:
 pytest
 ```
 
+## The agent contract
+
+`AGENT.md` is generated: do not edit it. Its hand-written parts live in `docs/agent/core.md`; the CLI reference, the parameter schema and the output shapes come from the code (the click commands, the parameter registries and `epydemix/cli/responses.py`). After changing any of these, rebuild it:
+
+```bash
+python tools/build_contract.py
+```
+
+CI fails if the committed `AGENT.md` is out of date or over its token ceiling. Worked examples in `core.md` tagged ```` ```bash example:NAME ```` are run by `tests/test_contract_examples.py`; after changing one, record its output shape with `EPX_UPDATE_CONTRACT_EXAMPLES=1 pytest tests/test_contract_examples.py`.
+
 ## Documentation
 
 The documentation is in `docs/source/` (Markdown, built with Sphinx and the Furo theme) and is published on [Read the Docs](https://epydemix.readthedocs.io/). The tutorial notebooks in `tutorials/` are included in the site with their saved outputs; they are not re-run during the build, so re-run and save a notebook when its outputs should change.
