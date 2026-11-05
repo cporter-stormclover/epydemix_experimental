@@ -10,7 +10,6 @@ Usage::
     epydemix defaults
 """
 
-import hashlib
 import json
 import sys
 from pathlib import Path
@@ -36,25 +35,6 @@ def _error_json(code, message, details=None):
         err["details"] = details
     click.echo(json.dumps(err, indent=2), err=True)
     sys.exit(1)
-
-
-def _provenance(command, config_path, used_config):
-    """Build the manifest's provenance block.
-
-    Records the seed alongside the invoking command, and a hash of the resolved
-    config rather than relying on ``config_path`` alone — that path frequently
-    goes stale, while the config itself is stored inside the bundle.
-    """
-    prov = {"command": command}
-    if config_path is not None:
-        prov["config_path"] = str(Path(config_path).resolve())
-    if used_config:
-        blob = json.dumps(used_config, sort_keys=True, cls=NumpySafeEncoder)
-        prov["config_sha256"] = hashlib.sha256(blob.encode()).hexdigest()
-        seed = (used_config.get("simulation") or {}).get("seed")
-        if seed is not None:
-            prov["seed"] = seed
-    return prov
 
 
 # ---------------------------------------------------------------------------
@@ -91,9 +71,8 @@ def run(config_path, output):
 
     Writes an .epx bundle and prints the manifest to stdout.
     """
-    from ..io.bundle import save_bundle
-    from ..io.summary import try_write_summary
-    from .config import load_config, run_from_config, validate_config
+    from .config import load_config, validate_config
+    from .execute import run_to_bundle
 
     try:
         config = load_config(config_path)
@@ -112,10 +91,9 @@ def run(config_path, output):
 
     try:
         config_dir = Path(config_path).parent
-        results, used_config = run_from_config(config, config_dir=config_dir)
-        prov = _provenance("run", config_path, used_config)
-        manifest = save_bundle(results, output, config=used_config, provenance=prov)
-        manifest = try_write_summary(output, manifest)
+        manifest = run_to_bundle(
+            config, output, config_dir=config_dir, config_path=config_path
+        )
         click.echo(f"Bundle saved to: {output}", err=True)
         _print_json(manifest)
     except Exception as e:
@@ -141,13 +119,8 @@ def calibrate(config_path, output):
 
     Writes an .epx calibration bundle and prints the manifest to stdout.
     """
-    from ..io.bundle import save_bundle
-    from ..io.summary import try_write_summary
-    from .config import (
-        calibrate_from_config,
-        load_config,
-        validate_calibration_config,
-    )
+    from .config import load_config, validate_calibration_config
+    from .execute import calibrate_to_bundle
 
     try:
         config = load_config(config_path)
@@ -167,10 +140,9 @@ def calibrate(config_path, output):
 
     try:
         config_dir = Path(config_path).parent
-        results, used_config = calibrate_from_config(config, config_dir=config_dir)
-        prov = _provenance("calibrate", config_path, used_config)
-        manifest = save_bundle(results, output, config=used_config, provenance=prov)
-        manifest = try_write_summary(output, manifest)
+        manifest = calibrate_to_bundle(
+            config, output, config_dir=config_dir, config_path=config_path
+        )
         click.echo(f"Calibration bundle saved to: {output}", err=True)
         _print_json(manifest)
     except Exception as e:
@@ -226,13 +198,8 @@ def project(calibration_bundle, config_path, output):
       epydemix project calibration.epx -o projection.epx
       epydemix project calibration.epx -c projection.yaml -o projection.epx
     """
-    from ..io.bundle import save_bundle
-    from ..io.summary import try_write_summary
-    from .config import (
-        load_config,
-        project_from_config,
-        validate_projection_config,
-    )
+    from .config import load_config, validate_projection_config
+    from .execute import project_to_bundle
 
     # Build the effective config
     try:
@@ -286,13 +253,13 @@ def project(calibration_bundle, config_path, output):
 
     try:
         proj_config_dir = Path(config_path).parent if config_path is not None else None
-        results, used_config = project_from_config(
-            config, calibration_bundle, config_dir=proj_config_dir
+        manifest = project_to_bundle(
+            config,
+            calibration_bundle,
+            output,
+            config_dir=proj_config_dir,
+            config_path=config_path,
         )
-        prov = _provenance("project", config_path, used_config)
-        prov["parent_bundle"] = str(Path(calibration_bundle).resolve())
-        manifest = save_bundle(results, output, config=used_config, provenance=prov)
-        manifest = try_write_summary(output, manifest)
         click.echo(f"Projection bundle saved to: {output}", err=True)
         _print_json(manifest)
     except Exception as e:
@@ -762,6 +729,83 @@ def populations():
         _print_json({"populations": locations})
     except Exception as e:
         _error_json("POPULATION_ERROR", str(e))
+
+
+# ---------------------------------------------------------------------------
+# verify / replay
+# ---------------------------------------------------------------------------
+
+
+@cli.command()
+@click.argument("bundle_path", type=click.Path(exists=True))
+@click.option(
+    "--offline",
+    is_flag=True,
+    default=False,
+    help="Do not download the population data to check its hashes.",
+)
+def verify(bundle_path, offline):
+    """Check a bundle against the hashes recorded when it was written.
+
+    Recomputes the hash of every bundle file, of the manifest and of the
+    stored config, and of the population data the run used (fetched again at
+    the recorded version unless --offline). Prints a drift report and exits
+    with status 1 if anything changed. Differences between the environment
+    that wrote the bundle and this one are reported, not counted as drift.
+
+    \b
+    Examples:
+      epydemix verify results.epx
+      epydemix verify results.epx --offline
+    """
+    from ..io.provenance import verify_bundle
+
+    try:
+        report = verify_bundle(bundle_path, check_population=not offline)
+    except Exception as e:
+        _error_json("VERIFY_ERROR", str(e))
+    _print_json(report)
+    if not report["verified"]:
+        sys.exit(1)
+
+
+@cli.command()
+@click.argument("bundle_path", type=click.Path(exists=True))
+@click.option(
+    "--tol",
+    type=float,
+    default=0.05,
+    show_default=True,
+    help="Largest relative difference that still counts as reproduced.",
+)
+@click.option(
+    "--output",
+    "-o",
+    default=None,
+    help="Keep the re-run bundle at this path (default: a temporary directory).",
+)
+def replay(bundle_path, tol, output):
+    """Re-run a bundle from its stored config and seed, and compare results.
+
+    Re-executes the command that wrote the bundle (run, calibrate or project,
+    the last from the recorded parent bundle) with the bundle's config.yaml,
+    then compares every number in the two summary.json files. Prints the
+    largest relative difference and exits with status 1 if it exceeds --tol.
+
+    \b
+    Examples:
+      epydemix replay results.epx
+      epydemix replay results.epx --tol 0 -o replayed.epx
+    """
+    from .replay import replay_bundle
+
+    try:
+        report = replay_bundle(bundle_path, output=output, tol=tol)
+    except Exception as e:
+        _error_json("REPLAY_ERROR", str(e))
+    _print_json(report)
+    if not report["reproduced"]:
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------

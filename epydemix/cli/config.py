@@ -5,6 +5,7 @@ import copy
 import difflib
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -18,6 +19,11 @@ from . import schema_version as _schema_version
 # Default simulation counts when not specified in config
 DEFAULT_N_SIMULATIONS = 100
 DEFAULT_N_PROJECTIONS = 200
+
+# Release of the epydemix-data repository a named population is read from
+# when the config does not pin one with population.data_version.
+DEFAULT_DATA_VERSION = "v1.2.0"
+_RELEASE_TAG = re.compile(r"v\d+\.\d+\.\d+")
 
 # Optional structural module flags accepted under the `model:` block of a
 # predefined-backbone config. Numeric module rates (e.g. waning_rate,
@@ -542,6 +548,26 @@ def _validate_custom_references(
                     )
 
 
+def _validate_population(pop_cfg: Any, errors: list, warnings: list) -> None:
+    """Check the population section's data version."""
+    if not isinstance(pop_cfg, dict) or "data_version" not in pop_cfg:
+        return
+    version = pop_cfg["data_version"]
+    if not isinstance(version, str) or not version.strip():
+        errors.append(
+            "population.data_version must be a tag of the epydemix-data "
+            f"repository such as '{DEFAULT_DATA_VERSION}', got {version!r}"
+        )
+        return
+    if not _RELEASE_TAG.fullmatch(version):
+        warnings.append(
+            f"population.data_version {version!r} is not a release tag (vX.Y.Z); "
+            "if it names a branch the data can change under the same name"
+        )
+    if "name" not in pop_cfg:
+        warnings.append("population.data_version has no effect without population.name")
+
+
 def resolve_seed(sim_cfg: Dict[str, Any]) -> int:
     """Return the seed for a run, drawing one if the config does not set it.
 
@@ -578,6 +604,7 @@ def validate_config(
     warnings = []
     _schema_version.check(config, errors, warnings)
     _assumptions.validate_block(config, errors)
+    _validate_population(config.get("population"), errors, warnings)
 
     # Must have model section
     if "model" not in config:
@@ -889,6 +916,7 @@ def build_model_from_config(
         model.import_epydemix_population(
             population_name=pop_cfg["name"],
             contact_layers=pop_cfg.get("contact_layers"),
+            data_version=pop_cfg.get("data_version", DEFAULT_DATA_VERSION),
         )
 
     if model_type not in SUPPORTED_MODELS:

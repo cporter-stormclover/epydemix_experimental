@@ -13,7 +13,10 @@ import numpy as np
 #   2: ``schema_version`` and a unique bundle ``id``; ``files.summary``
 #      (summary.json) in bundles written by the CLI.
 #   3: ``assumptions``, copied from the config.
-MANIFEST_SCHEMA_VERSION = 3
+#   4: ``provenance`` extended: ``bundle_files`` and ``manifest_sha256``
+#      (content hashes), ``config_file_sha256``, ``population_data``,
+#      ``code``, ``environment``, ``contract_version``, ``agent``.
+MANIFEST_SCHEMA_VERSION = 4
 
 
 def _add_assumptions(manifest: Dict[str, Any], config: Optional[Dict]) -> None:

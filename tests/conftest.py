@@ -3,6 +3,8 @@
 ``offline_italy`` replaces the download of named populations with a snapshot
 of the Italy data (epydemix-data v1.2.0, default age groups), so tests that use
 ``population: {name: Italy}`` run offline and see the real contact matrices.
+It also serves the raw data files that provenance hashes; ``data_files`` maps
+each URL to its bytes and can be edited to simulate upstream drift.
 """
 
 import json
@@ -26,12 +28,31 @@ def italy_population(layers=None):
     return pop
 
 
+class OfflineData:
+    """Stand-in for the epydemix-data repository."""
+
+    def __init__(self):
+        self.loads = []  # keyword arguments of every population load
+        self.files = {}  # url -> bytes served instead of the download
+
+    def fetch(self, url):
+        if url.endswith("/locations.csv"):
+            return self.files.get(
+                url, b"location,primary_contact_source\nItaly,mistry_2021\n"
+            )
+        return self.files.get(url, f"offline copy of {url}".encode())
+
+
 @pytest.fixture
 def offline_italy(monkeypatch):
     """Serve every named population from the Italy snapshot."""
+    import epydemix.io.provenance as provenance
     import epydemix.model.epimodel as epimodel
 
+    data = OfflineData()
+
     def fake_load(population_name, *args, layers=None, **kwargs):
+        data.loads.append({"population_name": population_name, **kwargs})
         if population_name != "Italy":
             raise ValueError(
                 f"offline test fixture only has Italy, not {population_name}"
@@ -39,4 +60,5 @@ def offline_italy(monkeypatch):
         return italy_population(layers)
 
     monkeypatch.setattr(epimodel, "load_epydemix_population", fake_load)
-    return fake_load
+    monkeypatch.setattr(provenance, "_fetch", data.fetch)
+    return data

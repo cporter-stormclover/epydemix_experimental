@@ -186,6 +186,7 @@ parameters:
 population:
   name: "Italy"                     # an epydemix population dataset
   contact_layers: ["home", "work", "school", "community"]
+  data_version: "v1.2.0"            # epydemix-data release tag (default v1.2.0)
 # Option B: flat single-group population (no named dataset)
 # If omitted entirely, a single-group population of 100,000 is used.
 # population:
@@ -290,7 +291,7 @@ overrides:
 
 **Required sections:** `model`, `simulation` (with `start_date` and `end_date`).
 
-**Optional sections:** `parameters` (defaults used if omitted), `population`, `initial_conditions`, `interventions`, `overrides`, `base`, `assumptions`, `schema_version` (current 2; older accepted; `validate --upgrade` sets it).
+**Optional sections:** `parameters` (defaults used if omitted), `population`, `initial_conditions`, `interventions`, `overrides`, `base`, `assumptions`, `schema_version` (current 3; older accepted; `validate --upgrade` sets it).
 
 ### Assumptions
 
@@ -380,27 +381,19 @@ dtype = manifest["files"]["compartments"]["columns"]["Infected_total"]["dtype"]
 
 Every bundle produced by the CLI includes a `provenance` key in the manifest that records the operation that created it:
 
-```json
-{
-  "provenance": {
-    "command": "project",
-    "parent_bundle": "/abs/path/to/calibration.epx",
-    "config_path": "/abs/path/to/projection.yaml",
-    "config_sha256": "fad2f1f19af81ebcd...",
-    "seed": 1829465027
-  }
-}
-```
-
-Fields vary by command:
-
 | Field | Present in | Description |
 |-------|-----------|-------------|
 | `command` | all | The CLI command that created this bundle (`run`, `calibrate`, `project`) |
 | `config_path` | all | Absolute path to the config file used — may go stale; prefer `config_sha256` |
-| `config_sha256` | all | Hash of the resolved config actually used, which is stored in the bundle |
+| `config_sha256`, `config_file_sha256` | all | Hash of the resolved config stored in the bundle; of the file as given |
 | `seed` | all | RNG seed for the run (see Reproducibility below) |
 | `parent_bundle` | `project` only | Absolute path to the calibration bundle the projection sampled from |
+| `bundle_files`, `manifest_sha256` | all | sha256 of every bundle file (not `figures/`) and of the manifest |
+| `population_data` | named populations | Data repo, version tag, contact source, per-file hashes |
+| `code`, `environment` | all | epydemix version, git commit, dirty flag; Python and package versions |
+| `contract_version`, `agent` | all; if set | Hash of this file; `EPX_AGENT_RUNTIME` / `EPX_AGENT_MODEL` |
+
+`epydemix verify <bundle>` recomputes every hash (population data too, unless `--offline`), prints a drift report and exits 1 on drift. `epydemix replay <bundle> [--tol 0.05]` re-runs the stored config with its seed and reports the largest relative difference between the two `summary.json` files.
 
 Use provenance to trace the dependency chain: a projection bundle points back to its calibration bundle, and both point to their config files. This makes it possible to reconstruct the full lineage of any result.
 
@@ -1155,7 +1148,7 @@ Errors are printed as JSON to stderr:
 }
 ```
 
-Error codes: `CONFIG_LOAD_ERROR`, `INVALID_CONFIG`, `RUNTIME_ERROR`, `INSPECT_ERROR`, `UNKNOWN_MODEL`, `UNKNOWN_DEFAULTS`, `POPULATION_ERROR`.
+Error codes: `CONFIG_LOAD_ERROR`, `INVALID_CONFIG`, `RUNTIME_ERROR`, `INSPECT_ERROR`, `UNKNOWN_MODEL`, `UNKNOWN_DEFAULTS`, `POPULATION_ERROR`, `VERIFY_ERROR`, `REPLAY_ERROR`.
 
 ## Complete Workflow Examples
 
