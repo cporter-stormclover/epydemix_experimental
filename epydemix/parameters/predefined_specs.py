@@ -6,6 +6,7 @@ extension (waning immunity, vaccination, outcome). These are registered
 automatically when a predefined model is created.
 """
 
+from .semantic import SemanticCheck
 from .spec import ParameterSpec
 
 
@@ -410,6 +411,54 @@ def outcome_specs(
     raise ValueError(
         f"Unknown outcome '{outcome}'. Supported values: 'deaths', 'hospitalization'."
     )
+
+
+def default_semantic_checks() -> list:
+    """Cross-parameter rules for configs of the predefined models."""
+    module_rules = [
+        ("vaccination_rate", "model.vaccination", True, "vaccination"),
+        ("waning_rate", "model.waning_immunity", True, "waning immunity"),
+        ("mortality_rate", "model.outcome", "deaths", "the deaths outcome"),
+        (
+            "hospitalization_rate",
+            "model.outcome",
+            "hospitalization",
+            "the hospitalization outcome",
+        ),
+    ]
+    checks = [
+        SemanticCheck(
+            name=f"{parameter}_requires_module",
+            rule="requires",
+            parameter=parameter,
+            greater_than=0.0,
+            requires={path: value},
+            message=f"a positive {parameter} has no effect without {label}",
+        )
+        for parameter, path, value, label in module_rules
+    ]
+    checks += [
+        SemanticCheck(
+            name=f"{section}_dates_ordered",
+            rule="ordered_dates",
+            section=section,
+            message="A window that ends before it starts has no effect.",
+        )
+        for section in ("interventions", "overrides")
+    ]
+    checks.append(
+        SemanticCheck(
+            name="derived_r0_plausible",
+            rule="range",
+            severity="warning",
+            quantity="derived.*.value",
+            min=0.5,
+            max=30.0,
+            message="an R0 outside [0.5, 30] is implausible for a human "
+            "infectious disease; check the value",
+        )
+    )
+    return checks
 
 
 # Map of model name → spec factory function

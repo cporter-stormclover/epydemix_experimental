@@ -605,6 +605,7 @@ def validate_config(
     _schema_version.check(config, errors, warnings)
     _assumptions.validate_block(config, errors)
     _validate_population(config.get("population"), errors, warnings)
+    _validate_derived(config, errors)
 
     # Must have model section
     if "model" not in config:
@@ -710,14 +711,34 @@ def validate_config(
         if model is not None:
             registry = model.parameter_registry
             compartments = list(model.compartments)
-            _validate_predefined_parameters(model.parameter_registry, uses, errors)
+            semantic = registry.check_config(config)
+            errors.extend(semantic["errors"])
+            warnings.extend(semantic["warnings"])
+            # A failed `requires` rule already explains why a parameter does
+            # not belong to this model; do not report it twice.
+            explained = {
+                c.parameter
+                for c in registry.semantic_checks
+                if c.rule == "requires" and c.evaluate(config)
+            }
+            _validate_predefined_parameters(
+                registry,
+                [u for u in uses if u[1] not in explained],
+                errors,
+            )
+            for name in _derived_block(config):
+                if name not in registry:
+                    errors.append(
+                        f"derived: '{name}' is not a parameter of this model. "
+                        f"Parameters: {', '.join(registry.names)}"
+                    )
             # A parameter set by neither the parameters section nor a prior
             # silently takes its default, so name each one and its value.
             given = {
                 name
                 for section, name, _, _ in uses
                 if section in ("parameters", "calibration.priors")
-            }
+            } | set(_derived_block(config))
             unset = [
                 f"{spec.name} = {spec.default}"
                 for spec in model.parameter_registry
@@ -730,6 +751,13 @@ def validate_config(
                 )
     elif isinstance(model_cfg.get("compartments"), list):
         compartments = model_cfg["compartments"]
+        from ..parameters.predefined_specs import default_semantic_checks
+
+        for check in default_semantic_checks():
+            if check.rule == "requires":
+                continue  # module rules concern predefined models only
+            found = check.evaluate(config)
+            (errors if check.severity == "error" else warnings).extend(found)
 
     ic_cfg = config.get("initial_conditions")
     if isinstance(ic_cfg, dict) and compartments is not None:
@@ -738,13 +766,13 @@ def validate_config(
         )
 
     if model_type == "custom":
-        # Parameters are defined by the parameters section and, in a
+        # Parameters are defined by the parameters section, derived and, in a
         # calibration config, by the priors; overrides only refer to them.
         defined = {
             name
             for section, name, _, _ in uses
             if section in ("parameters", "calibration.priors")
-        }
+        } | set(_derived_block(config))
         _validate_custom_references(model_cfg, defined, errors)
         for section, name, _, _ in uses:
             if section.startswith("overrides") and name not in defined:
@@ -783,6 +811,38 @@ def validate_config(
             uses, config, registry, prompt_literals, no_value=_NO_VALUE
         )
     )
+
+    # Resolve derived parameters last: it builds the model (and loads a named
+    # population), which only makes sense for an otherwise valid config.
+    if _derived_block(config) and not errors:
+        try:
+            resolved = resolve_derived(config)
+        except Exception as e:
+            errors.append(f"derived: could not resolve: {e}")
+        else:
+            priors = (config.get("calibration") or {}).get("priors") or {}
+            for name, details in resolved.items():
+                calibrated = sorted(set(details["inputs"]) & set(priors))
+                if calibrated:
+                    errors.append(
+                        f"derived.{name} depends on {', '.join(calibrated)}, which "
+                        "the calibration samples; a derived value is fixed, so "
+                        "set it directly or calibrate it instead"
+                    )
+                spec = (
+                    registry.get(name)
+                    if registry is not None and name in registry
+                    else None
+                )
+                value = details["value"]
+                if spec is not None and (
+                    (spec.min is not None and value < spec.min)
+                    or (spec.max is not None and value > spec.max)
+                ):
+                    errors.append(
+                        f"derived.{name} resolves to {value:.4g}, outside the "
+                        f"range [{spec.min}, {spec.max}] of '{name}'"
+                    )
 
     return {
         "valid": len(errors) == 0,
@@ -872,6 +932,153 @@ def _load_schedule(
     return arr
 
 
+# Named populations loaded in this process, keyed by (name, layers, version).
+# One CLI invocation may need the same population several times (validation
+# resolving a derived parameter, then the run; every point of a sweep); the
+# cache lives only as long as the process.
+_POPULATION_CACHE: Dict[Tuple, Any] = {}
+
+
+def clear_population_cache() -> None:
+    """Forget the populations loaded so far in this process."""
+    _POPULATION_CACHE.clear()
+
+
+def _named_population(name: str, layers: Optional[list], data_version: str):
+    from ..model import epimodel as _epimodel
+
+    key = (name, tuple(layers) if layers else None, data_version)
+    if key not in _POPULATION_CACHE:
+        _POPULATION_CACHE[key] = _epimodel.load_epydemix_population(
+            name,
+            layers=list(layers) if layers else ["school", "work", "home", "community"],
+            data_version=data_version,
+        )
+    return copy.deepcopy(_POPULATION_CACHE[key])
+
+
+# Significant figures of an R0 given in a config (e.g. 2.5).
+R0_PRECISION = 2
+_DERIVATIONS = ("R0",)
+
+
+def _derived_block(config: Dict[str, Any]) -> Dict[str, Any]:
+    block = config.get("derived")
+    return block if isinstance(block, dict) else {}
+
+
+def _validate_derived(config: Dict[str, Any], errors: list) -> None:
+    """Check the shape of the ``derived`` block."""
+    if "derived" not in config:
+        return
+    block = config["derived"]
+    if not isinstance(block, dict) or not block:
+        errors.append(
+            "derived must map a parameter to its derivation, e.g. "
+            "{transmission_rate: {from: R0, value: 2.5}}"
+        )
+        return
+    params = config.get("parameters") or {}
+    priors = (config.get("calibration") or {}).get("priors") or {}
+    for name, spec in block.items():
+        label = f"derived.{name}"
+        if not isinstance(spec, dict):
+            errors.append(f"{label} must be a mapping with 'from' and 'value'")
+            continue
+        source = spec.get("from")
+        if source not in _DERIVATIONS:
+            errors.append(
+                f"{label}.from {source!r} is not a known derivation "
+                f"(known: {', '.join(_DERIVATIONS)})"
+            )
+        value = spec.get("value")
+        if not _is_number(value) or value <= 0:
+            errors.append(f"{label}.value must be a positive number, got {value!r}")
+        if isinstance(params, dict) and name in params:
+            errors.append(
+                f"'{name}' is set both in parameters ({params[name]!r}) and in "
+                "derived; keep only one"
+            )
+        if isinstance(priors, dict) and name in priors:
+            errors.append(f"'{name}' is both derived and calibrated; keep only one")
+
+
+def _infected_for(config: Dict[str, Any], model: EpiModel) -> List[str]:
+    from ..model.reproduction import infected_compartments_for
+
+    infected = infected_compartments_for(config.get("model") or {}, model.compartments)
+    if not infected:
+        raise ValueError(
+            "deriving from R0 needs the model's infected compartments; custom "
+            "models declare them with role: infected"
+        )
+    return infected
+
+
+def resolve_derived(
+    config: Dict[str, Any], config_dir: Optional[Path] = None
+) -> Dict[str, Dict[str, Any]]:
+    """Resolve the ``derived`` block of a config.
+
+    ``derived: {transmission_rate: {from: R0, value: 2.5}}`` sets
+    ``transmission_rate = R0 * gamma / rho(C)``, with ``rho(C)`` the spectral
+    radius of the population's contact matrix over the config's layers and
+    ``gamma`` the model's effective removal rate (from its next-generation
+    matrix). Loads the population for named populations.
+
+    Returns:
+        ``{parameter: {"value", "from", "R0", "rho", "gamma", "formula",
+        "inputs", "contact_layers"}}``; empty without a ``derived`` block.
+    """
+    from ..model.reproduction import solve_rate_for_r0
+
+    block = _derived_block(config)
+    if not block:
+        return {}
+    placeholder = copy.deepcopy(config)
+    placeholder.pop("derived", None)
+    placeholder.setdefault("parameters", {})
+    for name in block:
+        placeholder["parameters"][name] = 1.0
+    model = build_model_from_config(placeholder, config_dir=config_dir)
+    infected = _infected_for(config, model)
+    layers = (config.get("population") or {}).get("contact_layers")
+    resolved = {}
+    for name, spec in block.items():
+        solution = solve_rate_for_r0(
+            model, float(spec["value"]), parameter=name, infected=infected
+        )
+        resolved[name] = {
+            "value": solution["value"],
+            "from": "R0",
+            "R0": float(spec["value"]),
+            "rho": solution["rho"],
+            "gamma": solution["gamma"],
+            "formula": solution["formula"],
+            "inputs": ["R0"] + solution["inputs"],
+            "contact_layers": list(layers) if layers else list(model.population.layers),
+        }
+    return resolved
+
+
+def apply_derived(
+    config: Dict[str, Any], config_dir: Optional[Path] = None
+) -> Dict[str, Any]:
+    """A copy of the config with derived parameters set in ``parameters``.
+
+    The copy is what the model is built from; the config stored in the bundle
+    keeps the ``derived`` block, so a re-run derives the value again.
+    """
+    resolved = resolve_derived(config, config_dir)
+    if not resolved:
+        return config
+    out = copy.deepcopy(config)
+    out.setdefault("parameters", {})
+    for name, details in resolved.items():
+        out["parameters"][name] = details["value"]
+    return out
+
+
 def build_model_from_config(
     config: Dict[str, Any],
     config_dir: Optional[Path] = None,
@@ -913,10 +1120,12 @@ def build_model_from_config(
     # Population — load before transitions so n_groups is correct when
     # schedule files are resolved (e.g. kind: scheduled needs the real n_groups).
     if "name" in pop_cfg and pop_cfg["name"] != "default":
-        model.import_epydemix_population(
-            population_name=pop_cfg["name"],
-            contact_layers=pop_cfg.get("contact_layers"),
-            data_version=pop_cfg.get("data_version", DEFAULT_DATA_VERSION),
+        model.set_population(
+            _named_population(
+                pop_cfg["name"],
+                pop_cfg.get("contact_layers"),
+                pop_cfg.get("data_version", DEFAULT_DATA_VERSION),
+            )
         )
 
     if model_type not in SUPPORTED_MODELS:
@@ -1101,7 +1310,9 @@ def run_from_config(
     Returns:
         Tuple of (SimulationResults, manifest_dict).
     """
-    model = build_model_from_config(config, config_dir=config_dir)
+    model = build_model_from_config(
+        apply_derived(config, config_dir), config_dir=config_dir
+    )
     sim_cfg = config.get("simulation", {})
 
     ic = build_initial_conditions(config, model)
@@ -1293,7 +1504,9 @@ def _make_simulation_function(
     """
     from ..model.epimodel import simulate
 
-    model = build_model_from_config(config, config_dir=config_dir)
+    model = build_model_from_config(
+        apply_derived(config, config_dir), config_dir=config_dir
+    )
     sim_cfg = config.get("simulation", {})
     ic = build_initial_conditions(config, model)
     target = config.get("calibration", {}).get("target_variable")
@@ -1451,9 +1664,12 @@ def calibrate_from_config(
     sim_fn = _make_simulation_function(config, config_dir=config_dir)
     distance_fn = _resolve_distance_function(cal_cfg.get("distance", "rmse"))
 
-    # Fixed parameters = parameters section minus any that appear in priors
+    # Fixed parameters = parameters section (with derived values) minus any
+    # that appear in priors
     fixed_params = {
-        k: v for k, v in config.get("parameters", {}).items() if k not in priors
+        k: v
+        for k, v in apply_derived(config, config_dir).get("parameters", {}).items()
+        if k not in priors
     }
 
     sampler = ABCSampler(
@@ -1621,7 +1837,9 @@ def project_from_config(
         w = np.ones(len(posterior_df)) / len(posterior_df)
 
     # --- build model and simulation params --------------------------------
-    model = build_model_from_config(config, config_dir=config_dir)
+    model = build_model_from_config(
+        apply_derived(config, config_dir), config_dir=config_dir
+    )
     sim_cfg = config.get("simulation", {})
     ic = build_initial_conditions(config, model)
     n_simulations = proj_cfg.get("n_simulations", DEFAULT_N_PROJECTIONS)

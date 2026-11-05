@@ -48,8 +48,10 @@ def offline_italy(monkeypatch):
     """Serve every named population from the Italy snapshot."""
     import epydemix.io.provenance as provenance
     import epydemix.model.epimodel as epimodel
+    from epydemix.cli.config import clear_population_cache
 
     data = OfflineData()
+    clear_population_cache()
 
     def fake_load(population_name, *args, layers=None, **kwargs):
         data.loads.append({"population_name": population_name, **kwargs})
@@ -61,4 +63,5 @@ def offline_italy(monkeypatch):
 
     monkeypatch.setattr(epimodel, "load_epydemix_population", fake_load)
     monkeypatch.setattr(provenance, "_fetch", data.fetch)
-    return data
+    yield data
+    clear_population_cache()

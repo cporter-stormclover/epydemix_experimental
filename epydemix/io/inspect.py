@@ -630,12 +630,74 @@ def _sampled_metric(samples: pd.Series, **extra) -> Dict[str, Any]:
     }
 
 
-def _metric_attack_rate(comp, manifest, **kw):
-    """Fraction of population ever infected (recovered + dead)."""
-    attack = _legacy_attack_rate_samples(comp)
+def infected_compartments_of(manifest: Dict[str, Any]) -> Optional[List[str]]:
+    """Infected-type compartments of the model that wrote a bundle."""
+    from ..model.reproduction import INFECTED_LIKE
+
+    model = manifest.get("model") or {}
+    if model.get("infected_compartments"):
+        return list(model["infected_compartments"])
+    compartments = model.get("compartments") or []
+    if "Susceptible" in compartments and model.get("type", "predefined") != "custom":
+        return [c for c in compartments if c in INFECTED_LIKE]
+    return None
+
+
+def infection_flow_columns_of(manifest: Dict[str, Any]) -> List[str]:
+    """Transition columns that move people into infection, from the manifest."""
+    from ..model.reproduction import infection_flow_columns
+
+    infected = infected_compartments_of(manifest)
+    if not infected:
+        return []
+    columns = manifest.get("files", {}).get("transitions", {}).get("columns", {})
+    compartments = (manifest.get("model") or {}).get("compartments") or []
+    return infection_flow_columns(columns, compartments, infected)
+
+
+def attack_rate_samples(comp, flows, manifest) -> Tuple[Optional[pd.Series], Dict]:
+    """Per-simulation attack rate (fraction of the initial population).
+
+    Model-aware: the sum of every flow into an infected-type compartment from
+    a compartment that is not one (for SEIR with a leaky vaccine,
+    ``Susceptible → Exposed`` plus ``Vaccinated → Exposed``), divided by the
+    initial population. Predefined models use fixed infected-type names;
+    custom models need ``role: infected`` on their compartments. Without that
+    information (or without flows) it falls back to susceptible depletion,
+    marked ``"method": "legacy"``.
+
+    Returns:
+        ``(samples, info)``; ``info`` names the method and the flows used.
+    """
+    cols = infection_flow_columns_of(manifest)
+    if flows is not None and cols and all(c in flows.columns for c in cols):
+        compartments = (manifest.get("model") or {}).get("compartments") or []
+        totals = [f"{c}_total" for c in compartments if f"{c}_total" in comp.columns]
+        population = (
+            comp.sort_values("date").groupby("sim_id")[totals].first().sum(axis=1)
+        )
+        infections = flows.groupby("sim_id")[cols].sum().sum(axis=1)
+        return infections / population, {
+            "method": "transition_flows",
+            "flows": cols,
+            "infected_compartments": infected_compartments_of(manifest),
+        }
+    legacy = _legacy_attack_rate_samples(comp)
+    info = {
+        "method": "legacy",
+        "note": "susceptible depletion; overstates the attack rate when people "
+        "leave the susceptible compartment uninfected. Custom models give the "
+        "exact attack rate when their compartments carry role: infected",
+    }
+    return legacy, info
+
+
+def _metric_attack_rate(comp, manifest, flows=None, **kw):
+    """Percentage of the population infected during the simulation."""
+    attack, info = attack_rate_samples(comp, flows, manifest)
     if attack is None:
         return {"value": None, "note": "no susceptible compartment found"}
-    return _sampled_metric(attack * 100, units="percent")
+    return _sampled_metric(attack * 100, units="percent", method=info["method"])
 
 
 def _metric_peak(comp, manifest, variable=None, **kw):
@@ -801,6 +863,13 @@ def compare_bundles(
                 ),
                 on=["sim_id", "date"],
             )
+        infection_flows = None
+        if any(name == "attack_rate" for name, _ in parsed_metrics):
+            cols = infection_flow_columns_of(manifest)
+            if cols:
+                infection_flows = load_bundle_dataframe(
+                    bundle_path, "transitions", columns=["sim_id", "date"] + cols
+                )
 
         scenario_result = {}
         scenario_errors = {}
@@ -811,6 +880,8 @@ def compare_bundles(
                 kwargs["variable"] = variables[0]
             if metric_param is not None:
                 kwargs["threshold"] = metric_param
+            if metric_name == "attack_rate":
+                kwargs["flows"] = infection_flows
             value = fn(comp, manifest, **kwargs)
             se = _metric_se(value) if with_se else None
             if se is not None:

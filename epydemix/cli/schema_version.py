@@ -20,6 +20,7 @@ INTRODUCED: Dict[int, List[str]] = {
     1: [],  # the original grammar (epydemix 1.5.0)
     2: ["schema_version", "assumptions"],
     3: ["population.data_version"],
+    4: ["derived"],
 }
 CONFIG_SCHEMA_VERSION = max(INTRODUCED)
 

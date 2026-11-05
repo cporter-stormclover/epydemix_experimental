@@ -1,4 +1,5 @@
 from ..parameters.predefined_specs import (
+    default_semantic_checks,
     outcome_specs,
     seiar_specs,
     seir_specs,
@@ -109,6 +110,8 @@ def load_predefined_model(
             hospitalization_recovery_rate,
         )
 
+    for check in default_semantic_checks():
+        model.parameter_registry.add_semantic_check(check)
     return model
 
 

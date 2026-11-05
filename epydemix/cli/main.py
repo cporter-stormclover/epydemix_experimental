@@ -332,6 +332,83 @@ def validate(config_path, prompt_path, upgrade):
 
 
 # ---------------------------------------------------------------------------
+# derive
+# ---------------------------------------------------------------------------
+
+
+@cli.command()
+@click.argument("config_path", type=click.Path(exists=True))
+@click.option(
+    "--raw",
+    is_flag=True,
+    default=False,
+    help="Print full-precision values (no rounding).",
+)
+def derive(config_path, raw):
+    """Resolve a config's derived parameters and print them.
+
+    \b
+      derived:
+        transmission_rate: {from: R0, value: 2.5}
+    sets transmission_rate = R0 * gamma / rho(C): rho(C) is the spectral
+    radius of the population's contact matrix over the config's layers and
+    gamma the model's effective removal rate, from its next-generation
+    matrix (the recovery rate for SEIR). Values are rounded to the precision
+    of their inputs; --raw prints them in full.
+
+    \b
+    Examples:
+      epydemix derive config.yaml
+      epydemix derive config.yaml --raw
+    """
+    from ..io.precision import format_parameter, round_significant
+    from .config import (
+        R0_PRECISION,
+        _build_predefined,
+        load_config,
+        resolve_derived,
+        validate_calibration_config,
+        validate_config,
+    )
+
+    try:
+        config = load_config(config_path)
+    except Exception as e:
+        _error_json("CONFIG_LOAD_ERROR", str(e))
+    if not config.get("derived"):
+        _error_json("INVALID_CONFIG", "The config has no 'derived' block.")
+    validation = (
+        validate_calibration_config(config)
+        if "calibration" in config
+        else validate_config(config)
+    )
+    if not validation["valid"]:
+        _error_json(
+            "INVALID_CONFIG", "Config validation failed.", details=validation["errors"]
+        )
+    try:
+        resolved = resolve_derived(config, config_dir=Path(config_path).parent)
+    except Exception as e:
+        _error_json("RUNTIME_ERROR", str(e))
+
+    if not raw:
+        model_cfg = config.get("model") or {}
+        model = _build_predefined(model_cfg.get("type", "custom"), model_cfg)
+        registry = model.parameter_registry if model is not None else None
+        precision = {"R0": R0_PRECISION}
+        for name, details in resolved.items():
+            gamma_inputs = [i for i in details["inputs"] if i != "R0"]
+            details["value"] = format_parameter(
+                name, details["value"], registry, details["inputs"], precision
+            )
+            details["gamma"] = format_parameter(
+                "gamma", details["gamma"], registry, gamma_inputs or None
+            )
+            details["rho"] = round_significant(details["rho"], 4)
+    _print_json({"derived": resolved, "warnings": validation["warnings"]})
+
+
+# ---------------------------------------------------------------------------
 # inspect
 # ---------------------------------------------------------------------------
 

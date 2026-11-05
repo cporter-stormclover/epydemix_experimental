@@ -13,9 +13,9 @@ BASE = {
         "name": "Italy",
         "contact_layers": ["home", "work", "school", "community"],
     },
+    # transmission_rate = R0 * recovery_rate / rho(C) = 2.5 * 0.2 / 13.9 = 0.036
+    "derived": {"transmission_rate": {"from": "R0", "value": 2.5}},
     "parameters": {
-        # R0 = 2.5: transmission_rate = R0 * recovery_rate / rho(C), rho = 13.9
-        "transmission_rate": 0.036,
         "incubation_rate": 0.25,
         "recovery_rate": 0.2,
         "vaccine_efficacy": 0.8,
@@ -48,12 +48,6 @@ SCENARIOS = {
 # The basis of every value the base config sets (the prompt gives R0 = 2.5, a
 # 4-day latent period, a 5-day infectious period and an 80% efficacy).
 BASE_ASSUMPTIONS = [
-    {
-        "parameter": "transmission_rate",
-        "value": 0.036,
-        "basis": "derived",
-        "rationale": "R0 = 2.5 * recovery_rate / rho(C), rho = 13.9",
-    },
     {
         "parameter": "incubation_rate",
         "value": 0.25,

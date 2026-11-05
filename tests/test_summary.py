@@ -60,9 +60,9 @@ class TestWrittenByEveryRunCommand:
         _invoke("run", _write_yaml(tmp_path, MINIMAL_CONFIG), "-o", out)
         manifest = _read(out, "manifest.json")
         assert manifest["files"]["summary"]["path"] == "summary.json"
-        assert manifest["files"]["summary"]["schema_version"] == 2
+        assert manifest["files"]["summary"]["schema_version"] == 3
         summary = _read(out, "summary.json")
-        assert summary["schema_version"] == 2
+        assert summary["schema_version"] == 3
         assert summary["bundle_id"] == manifest["id"]
         assert summary["n_simulations"] == MINIMAL_CONFIG["simulation"]["n_simulations"]
         assert set(summary["variables"]) == {
@@ -70,7 +70,8 @@ class TestWrittenByEveryRunCommand:
             "Infected_total",
             "Recovered_total",
         }
-        assert summary["attack_rate_method"] == "legacy"
+        assert summary["attack_rate_method"] == "transition_flows"
+        assert summary["attack_rate_flows"] == ["Susceptible_to_Infected_total"]
         assert summary["attack_rate"]["units"] == "percent"
         _assert_matches_inspect(str(out))
 

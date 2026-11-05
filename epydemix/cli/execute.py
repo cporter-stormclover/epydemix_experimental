@@ -35,6 +35,7 @@ def finish_bundle(
     command: str,
     config_path: Optional[str] = None,
     extra_provenance: Optional[Dict[str, Any]] = None,
+    config_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Save results as a bundle with its summary and content hashes."""
     prov = provenance_block(
@@ -43,6 +44,10 @@ def finish_bundle(
     if extra_provenance:
         prov.update(extra_provenance)
     manifest = save_bundle(results, str(output), config=used_config, provenance=prov)
+    if used_config.get("derived"):
+        from .config import resolve_derived
+
+        manifest["derived"] = resolve_derived(used_config, config_dir)
     manifest = try_write_summary(str(output), manifest)
     return seal_bundle(output, manifest)
 
@@ -58,7 +63,9 @@ def run_to_bundle(
     from .config import run_from_config
 
     results, used = run_from_config(config, config_dir=config_dir)
-    return finish_bundle(results, output, used, command, config_path, extra_provenance)
+    return finish_bundle(
+        results, output, used, command, config_path, extra_provenance, config_dir
+    )
 
 
 def calibrate_to_bundle(
@@ -72,7 +79,9 @@ def calibrate_to_bundle(
     from .config import calibrate_from_config
 
     results, used = calibrate_from_config(config, config_dir=config_dir)
-    return finish_bundle(results, output, used, command, config_path, extra_provenance)
+    return finish_bundle(
+        results, output, used, command, config_path, extra_provenance, config_dir
+    )
 
 
 def project_to_bundle(
@@ -91,4 +100,4 @@ def project_to_bundle(
     )
     extra = {"parent_bundle": str(Path(calibration_bundle).resolve())}
     extra.update(extra_provenance or {})
-    return finish_bundle(results, output, used, command, config_path, extra)
+    return finish_bundle(results, output, used, command, config_path, extra, config_dir)

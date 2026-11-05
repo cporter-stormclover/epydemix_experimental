@@ -39,7 +39,9 @@ def _entry(parameter, value, basis="agent_choice", rationale="chosen"):
 
 
 class TestCaseStudy:
-    def test_each_overlay_warns_about_its_undeclared_vaccination_rate(self, tmp_path):
+    def test_each_overlay_warns_about_its_undeclared_vaccination_rate(
+        self, tmp_path, offline_italy
+    ):
         for name, path in write_case_study(tmp_path).items():
             report = json.loads(_invoke("validate", path).output)
             assert report["valid"]
@@ -47,12 +49,12 @@ class TestCaseStudy:
             assert len(found) == 1, (name, report["warnings"])
             assert repr(SCENARIOS[name]) in found[0]
 
-    def test_declared_assumptions_silence_every_warning(self, tmp_path):
+    def test_declared_assumptions_silence_every_warning(self, tmp_path, offline_italy):
         for name, path in write_case_study(tmp_path, declare=True).items():
             report = json.loads(_invoke("validate", path).output)
             assert report == {"valid": True, "errors": [], "warnings": []}, name
 
-    def test_band_is_named_in_the_warning(self, tmp_path):
+    def test_band_is_named_in_the_warning(self, tmp_path, offline_italy):
         path = write_case_study(tmp_path)["low"]
         warnings = json.loads(_invoke("validate", path).output)["warnings"]
         assert "inside the 'low' band" in _undeclared(warnings, "vaccination_rate")[0]
@@ -68,7 +70,6 @@ class TestCaseStudy:
                 declared = {a["parameter"]: a for a in json.load(f)["assumptions"]}
             # Base and overlay declarations are merged, not replaced.
             assert set(declared) == {
-                "transmission_rate",
                 "incubation_rate",
                 "recovery_rate",
                 "vaccine_efficacy",
@@ -82,7 +83,7 @@ class TestCaseStudy:
         assert [d["parameter"] for d in differing] == ["vaccination_rate"]
         assert differing[0]["values"]["low"]["value"] == 0.0015
         assert differing[0]["values"]["high"]["basis"] == "agent_choice"
-        assert "transmission_rate" in output["_assumptions"]["same"]
+        assert "recovery_rate" in output["_assumptions"]["same"]
 
 
 class TestValidation:

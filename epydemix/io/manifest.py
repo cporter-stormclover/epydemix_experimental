@@ -16,7 +16,28 @@ import numpy as np
 #   4: ``provenance`` extended: ``bundle_files`` and ``manifest_sha256``
 #      (content hashes), ``config_file_sha256``, ``population_data``,
 #      ``code``, ``environment``, ``contract_version``, ``agent``.
-MANIFEST_SCHEMA_VERSION = 4
+#   5: ``model.type`` and ``model.infected_compartments``; ``derived``
+#      (resolved derived parameters, written by the CLI).
+MANIFEST_SCHEMA_VERSION = 5
+
+
+def _model_section(config: Optional[Dict], compartments) -> Dict[str, Any]:
+    """Compartments, model type and infected-type compartments."""
+    from ..model.reproduction import INFECTED_LIKE, infected_compartments_for
+
+    section: Dict[str, Any] = {"compartments": compartments}
+    if config and config.get("model"):
+        model_cfg = config["model"]
+        section["type"] = model_cfg.get("type", "custom")
+        infected = infected_compartments_for(model_cfg, compartments)
+    elif "Susceptible" in compartments:
+        # No config: the full names of the predefined models identify them.
+        infected = [c for c in compartments if c in INFECTED_LIKE]
+    else:
+        infected = None
+    if infected:
+        section["infected_compartments"] = infected
+    return section
 
 
 def _add_assumptions(manifest: Dict[str, Any], config: Optional[Dict]) -> None:
@@ -87,9 +108,7 @@ def build_simulation_manifest(
         "type": "SimulationResults",
         "epydemix_version": _get_version(),
         "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
-        "model": {
-            "compartments": base_compartments,
-        },
+        "model": _model_section(config, base_compartments),
         "population": {
             "demographic_groups": demo_groups,
         },

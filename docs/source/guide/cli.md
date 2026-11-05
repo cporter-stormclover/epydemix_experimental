@@ -40,17 +40,16 @@ programs.
 :::{tip}
 Disease presets assume homogeneous mixing. On a real population, the reproduction number
 is $R_0 = \beta \rho(C) / \gamma$, where $\rho(C)$ is the spectral radius of the overall
-contact matrix, so a preset transmission rate usually needs rescaling:
+contact matrix, so a preset transmission rate usually needs rescaling. A config can
+state $R_0$ instead and let epydemix compute the rate:
 
-```python
-import numpy as np
-from epydemix.population import load_epydemix_population
-
-italy = load_epydemix_population("Italy")
-C = sum(italy.contact_matrices.values())
-rho = np.max(np.abs(np.linalg.eigvals(C)))   # about 13.9 for Italy
-transmission_rate = 2.5 * 0.14 / rho         # R0 = 2.5 with recovery_rate = 0.14
+```yaml
+derived:
+  transmission_rate: {from: R0, value: 2.5}   # instead of parameters.transmission_rate
 ```
+
+`epydemix derive config.yaml` prints the result with $\rho(C)$ and $\gamma$ (for Italy
+with all four layers and `recovery_rate: 0.2`, $\rho(C) = 13.9$ and the rate is 0.036).
 :::
 
 ## Configs

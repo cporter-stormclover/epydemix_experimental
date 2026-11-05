@@ -13,7 +13,7 @@ Read this file before doing anything. Then follow these principles:
 - **Read `summary.json` first; call `inspect` only for quantities it lacks.** Every bundle has one: 5/50/95% quantiles of peak, peak date and final value per `_total` compartment, attack rate, posterior. It is a cache; `inspect` reads Parquet.
 - **Copy `inspect` output verbatim into reports. Do not reformat or add digits.** `inspect`, `compare` and `summary.json` round each number to the first significant digit of its bootstrap standard error; a peak date whose 90% interval spans over a day is reported as `start/end` (`reported`). Unrounded: `--raw`, or `summary.json` → `raw`.
 - **Use the CLI for discovery and inspection.** `epydemix models`, `epydemix schema`, `epydemix defaults`, `epydemix inspect` — these are your primary tools. Do not read source code to figure out what's available.
-- **Use Python for analysis beyond what the CLI offers.** The CLI covers common queries (quantiles, summary, peak). For anything else (attack rates, scenario comparisons, custom metrics), write Python against the Parquet files. The manifest gives you full column schemas.
+- **Use Python for analysis beyond what the CLI offers.** The CLI covers common queries (quantiles, summary, peak). For anything else (custom metrics, figures), write Python against the Parquet files. The manifest gives you full column schemas.
 - **Store figures inside the bundle.** Save plots to `<bundle>/figures/` and register them with `add_figure_to_manifest`. See the Visualization Recipes section.
 - **Work step by step.** Discover → build config → validate → run → inspect → analyze → visualize.
 - **Never use `cd`.** Always use absolute paths. `cd` persists across shell invocations and silently corrupts all subsequent relative paths.
@@ -126,21 +126,7 @@ Each parameter in the JSON Schema includes `minimum`, `maximum`, `default`, and 
 
 **Warning:** disease preset `transmission_rate` values are calibrated assuming homogeneous mixing. When using a named population with a real contact matrix, the effective R₀ will be much higher than intended. Treat preset values as starting points only and sanity-check epidemic dynamics (peak timing, attack rate) before drawing conclusions.
 
-To find a transmission_rate that achieves a target R₀ with a named population, compute the spectral radius of the combined contact matrix:
-
-```python
-from epydemix.population import load_epydemix_population
-import numpy as np
-
-pop = load_epydemix_population("Italy")
-layers = ["home", "work", "school", "community"]
-C = sum(pop.contact_matrices[l] for l in layers)
-rho = np.max(np.abs(np.linalg.eigvals(C)))
-# transmission_rate = R0_target * recovery_rate / rho
-print(rho)   # e.g. ~14 for Italy — preset value of 0.3 gives R0 ≈ 19
-```
-
-For Italy with all four contact layers, ρ ≈ 14. Influenza (R₀ ≈ 1.3–1.5, recovery_rate 0.22) requires transmission_rate ≈ 0.020–0.024. Do this calculation before running any named-population simulation with a preset parameter value.
+**Set R₀, not the transmission rate.** Declare `derived: {transmission_rate: {from: R0, value: 2.5}}` instead of `parameters.transmission_rate` (not both): `validate` and `run` resolve `transmission_rate = R0 · γ / ρ(C)`, with ρ(C) the spectral radius of the population's contact matrix over `contact_layers` and γ the model's removal rate from its next-generation matrix (`recovery_rate` for SEIR). `epydemix derive config.yaml` prints the value and its intermediates (Italy, four layers, R₀ = 2.5, recovery 0.2: ρ = 13.9, 0.036); the manifest records them under `derived`. Validation also applies cross-parameter rules (`x-semantic-checks` in `epydemix schema`), e.g. a positive `vaccination_rate` requires `model.vaccination: true`, and warns when R₀ is outside [0.5, 30].
 
 ## Config Reference
 
@@ -291,7 +277,7 @@ overrides:
 
 **Required sections:** `model`, `simulation` (with `start_date` and `end_date`).
 
-**Optional sections:** `parameters` (defaults used if omitted), `population`, `initial_conditions`, `interventions`, `overrides`, `base`, `assumptions`, `schema_version` (current 3; older accepted; `validate --upgrade` sets it).
+**Optional sections:** `parameters` (defaults used if omitted), `population`, `initial_conditions`, `interventions`, `overrides`, `base`, `assumptions`, `derived`, `schema_version` (current 4; older accepted; `validate --upgrade` sets it).
 
 ### Assumptions
 
@@ -649,39 +635,7 @@ parameters:
 
 Natural immunity (`R → S`) and vaccine immunity (`V → S`) waning are independent parameters — typical values differ (natural: ~9 months, vaccine: ~4–8 months for COVID mRNA).
 
-**Attack rate in vaccination models:** computing attack rate as
-`(S_initial − S_final) / N` is wrong when a scheduled `S → V` vaccination
-transition is present — vaccinated individuals deplete S without being infected,
-inflating the count. Use cumulative infection flows from `transitions.parquet`.
-
-For all-or-nothing vaccines (V individuals are fully immune, no V→I transition):
-
-```python
-df = pd.read_parquet("results.epx/transitions.parquet",
-                     columns=["sim_id", "S_to_I_total"])
-attack_rate = df.groupby("sim_id")["S_to_I_total"].sum() / N * 100
-```
-
-For **leaky vaccines** (V→I breakthrough transition present), add both flows:
-
-```python
-df = pd.read_parquet("results.epx/transitions.parquet",
-                     columns=["sim_id", "S_to_I_total", "V_to_I_total"])
-attack_rate = (df.groupby("sim_id")[["S_to_I_total", "V_to_I_total"]].sum().sum(axis=1)
-               / N * 100)
-```
-
-Omitting `V_to_I_total` in a leaky model silently undercounts the true attack rate.
-
-**Multiple mediated transitions with the same source→target (e.g., S→E via I_mild and S→E via I_severe):** the framework records each mediated transition as a separate flow and sums them into a single `S_to_E_total` column. With two S→E transitions, `S_to_E_total` is approximately 2× the actual infection flow — using it for attack rate gives a value near 200% instead of the true figure. Use S depletion instead (valid when no S→V vaccination is present):
-
-```python
-comp = pd.read_parquet("results.epx/compartments.parquet",
-                       columns=["sim_id", "date", "S_total"])
-S0 = comp.groupby("sim_id")["S_total"].first()
-Sf = comp.groupby("sim_id")["S_total"].last()
-attack_rate = (S0 - Sf) / N * 100
-```
+**Attack rate:** `summary.json`, `compare -m attack_rate` and `inspect` compute it from `transitions.parquet`: every flow into an infected-type compartment from one that is not (Exposed, Infected, Asymptomatic; custom models: compartments with `role: infected`), over the initial population, so vaccination and multiple infectious classes are handled. `attack_rate_method` says which flows were used; `legacy` (susceptible depletion) appears only for custom models without roles.
 
 For models with multiple infectious classes, add one mediated transition per infectious compartment:
 ```yaml
@@ -786,7 +740,7 @@ epydemix compare baseline.epx early.epx late.epx \
 
 | Metric | Description |
 |---|---|
-| `attack_rate` | % of population ever infected (based on susceptible depletion). **Wrong for vaccination models** — vaccinated individuals also deplete S, inflating the count. Use `transitions.parquet` directly instead (see "Attack rate in vaccination models" under Building Custom Models). |
+| `attack_rate` | % of the initial population infected (flows into infected-type compartments; see "Attack rate") |
 | `peak` | Peak value of a variable (default: first I-like _total column) |
 | `peak_date` | Date of peak value |
 | `total_deaths` | Final value of the death compartment |
@@ -1160,13 +1114,13 @@ SEIR, R₀ = 2.5, leaky vaccine; four scenarios, four bundles:
 cat > base.yaml << 'EOF'
 model: {type: SEIR, vaccination: true}
 population: {name: Italy, contact_layers: [home, work, school, community]}
-parameters: {transmission_rate: 0.036, incubation_rate: 0.25, recovery_rate: 0.2,
-             vaccine_efficacy: 0.8, vaccination_rate: 0.0}
+derived: {transmission_rate: {from: R0, value: 2.5}}
+parameters: {incubation_rate: 0.25, recovery_rate: 0.2, vaccine_efficacy: 0.8,
+             vaccination_rate: 0.0}
 simulation: {start_date: "2026-10-01", end_date: "2027-03-31", n_simulations: 100}
 initial_conditions: {Susceptible: 0.9999, Exposed: 0.00005, Infected: 0.00005,
                      Recovered: 0.0, Vaccinated: 0.0}
 assumptions:
-  - {parameter: transmission_rate, value: 0.036, basis: derived, rationale: "R0 2.5"}
   - {parameter: incubation_rate, value: 0.25, basis: derived, rationale: "4-day latency"}
   - {parameter: recovery_rate, value: 0.2, basis: derived, rationale: "5-day infectivity"}
   - {parameter: vaccine_efficacy, value: 0.8, basis: prompt_literal, rationale: "80%"}
@@ -1176,7 +1130,7 @@ for s in no_vaccination:0.0 low:0.0015 moderate:0.0045 high:0.0115; do
   printf 'base: base.yaml\nparameters: {vaccination_rate: %s}\nassumptions:\n- {parameter: vaccination_rate, value: %s, basis: agent_choice, rationale: "%s"}\n' $v $v $n > $n.yaml
   epydemix validate $n.yaml && epydemix run $n.yaml -o $n.epx
 done
-python -c "import json; print(json.load(open('high.epx/summary.json'))['variables']['Infected_total']['peak'])"
+epydemix compare no_vaccination.epx low.epx moderate.epx high.epx -m attack_rate,peak
 ```
 
 For end-to-end worked examples (basic SIR, COVID-19 with interventions, custom Python analysis, calibration, and projections), see [AGENT_EXAMPLES.md](AGENT_EXAMPLES.md).

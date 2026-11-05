@@ -24,10 +24,11 @@ from .inspect import (
     SUMMARY_QUANTILES,
     _cmd_posterior,
     _date_quantiles,
-    _legacy_attack_rate_samples,
     _per_simulation_stats,
     _value_quantiles,
     _value_quantiles_se,
+    attack_rate_samples,
+    infection_flow_columns_of,
 )
 from .json_utils import NumpySafeEncoder
 
@@ -35,7 +36,9 @@ from .json_utils import NumpySafeEncoder
 #   1: values unrounded.
 #   2: values rounded to their bootstrap error; ``raw``, ``mc_se``,
 #      ``precision``; ``peak_date.reported``.
-SUMMARY_SCHEMA_VERSION = 2
+#   3: model-aware attack rate (``attack_rate_method: transition_flows``,
+#      ``attack_rate_flows``); ``legacy`` only as a fallback.
+SUMMARY_SCHEMA_VERSION = 3
 SUMMARY_FILENAME = "summary.json"
 
 
@@ -57,14 +60,22 @@ def _variable_summaries(comp):
     return variables, errors
 
 
-def _attack_rate(comp):
-    attack = _legacy_attack_rate_samples(comp)
+def _attack_rate(bundle, comp, manifest):
+    cols = infection_flow_columns_of(manifest)
+    flows = (
+        load_bundle_dataframe(
+            str(bundle), "transitions", columns=["sim_id", "date"] + cols
+        )
+        if cols
+        else None
+    )
+    attack, info = attack_rate_samples(comp, flows, manifest)
     if attack is None:
-        return None, None
+        return None, None, info
     attack = attack * 100
     result = _value_quantiles(attack)
     result["units"] = "percent"
-    return result, _value_quantiles_se(attack)
+    return result, _value_quantiles_se(attack), info
 
 
 def _with_reported_dates(variables: Dict[str, Any]) -> Dict[str, Any]:
@@ -114,7 +125,9 @@ def build_summary(bundle: str, manifest: Optional[Dict] = None) -> Dict[str, Any
     if "compartments" in files and (bundle / files["compartments"]["path"]).exists():
         comp = load_bundle_dataframe(str(bundle), "compartments")
         raw["variables"], se["variables"] = _variable_summaries(comp)
-        raw["attack_rate"], se["attack_rate"] = _attack_rate(comp)
+        raw["attack_rate"], se["attack_rate"], attack_info = _attack_rate(
+            bundle, comp, manifest
+        )
     if (bundle / "posterior.parquet").exists():
         raw["posterior"], se["posterior"] = _cmd_posterior(str(bundle), with_se=True)
 
@@ -122,7 +135,9 @@ def build_summary(bundle: str, manifest: Optional[Dict] = None) -> Dict[str, Any
     if "variables" in rounded:
         summary["variables"] = _with_reported_dates(rounded["variables"])
         summary["attack_rate"] = rounded["attack_rate"]
-        summary["attack_rate_method"] = "legacy"
+        summary["attack_rate_method"] = attack_info["method"]
+        if "flows" in attack_info:
+            summary["attack_rate_flows"] = attack_info["flows"]
     if "posterior" in rounded:
         summary["posterior"] = rounded["posterior"]
     summary["precision"] = dict(_precision.PRECISION_NOTE)
