@@ -59,14 +59,17 @@ def config_sha256(config: Dict[str, Any]) -> str:
 
 
 def bundle_file_hashes(bundle) -> Dict[str, str]:
-    """sha256 of every file in a bundle, except the manifest and figures/."""
+    """sha256 of every file in a bundle, except manifests and figures/."""
     bundle = Path(bundle)
     hashes = {}
     for path in sorted(bundle.rglob("*")):
         if not path.is_file():
             continue
         rel = path.relative_to(bundle).as_posix()
-        if rel in _UNSEALED or rel.split("/")[0] in _UNSEALED_DIRS:
+        parts = rel.split("/")
+        # Manifests and figures may change after a bundle is written; a
+        # sweep's points are bundles with seals of their own.
+        if parts[-1] in _UNSEALED or any(d in _UNSEALED_DIRS for d in parts[:-1]):
             continue
         hashes[rel] = sha256_file(path)
     return hashes

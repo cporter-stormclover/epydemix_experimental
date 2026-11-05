@@ -78,6 +78,11 @@ def run(config_path, output):
         config = load_config(config_path)
     except Exception as e:
         _error_json("CONFIG_LOAD_ERROR", str(e))
+    if "sweep" in config:
+        _error_json(
+            "INVALID_CONFIG",
+            "The config has a 'sweep' block; run it with `epydemix sweep`.",
+        )
 
     validation = validate_config(config)
     if not validation["valid"]:
@@ -319,7 +324,9 @@ def validate(config_path, prompt_path, upgrade):
         with open(prompt_path) as f:
             literals = prompt_literals(f.read())
 
-    if "calibration" in config:
+    if "sweep" in config:
+        result = _validate_sweep(config)
+    elif "calibration" in config:
         result = validate_calibration_config(config, prompt_literals=literals)
     else:
         result = validate_config(config, prompt_literals=literals)
@@ -329,6 +336,105 @@ def validate(config_path, prompt_path, upgrade):
 
     if not result["valid"]:
         sys.exit(1)
+
+
+def _validate_sweep(config):
+    """Validate every point of a sweep config (nothing runs)."""
+    from .config import resolve_seed
+    from .sweep import SweepError, plan
+
+    config = dict(config)
+    seed = resolve_seed(config.get("simulation") or {})
+    try:
+        points = plan(config, seed)
+    except SweepError as e:
+        result = {"valid": False, "errors": e.errors, "warnings": []}
+        if e.point:
+            result["point"] = e.point
+        return result
+    warnings = []
+    for point in points:
+        for w in point["warnings"]:
+            if w not in warnings:
+                warnings.append(w)
+    return {"valid": True, "errors": [], "warnings": warnings, "n_points": len(points)}
+
+
+# ---------------------------------------------------------------------------
+# sweep
+# ---------------------------------------------------------------------------
+
+
+@cli.command()
+@click.argument("config_path", type=click.Path(exists=True))
+@click.option(
+    "--output", "-o", default="sweep.epx", help="Path for the output sweep bundle."
+)
+@click.option(
+    "--workers",
+    type=int,
+    default=1,
+    show_default=True,
+    help="Points run in parallel (separate processes).",
+)
+def sweep(config_path, output, workers):
+    """Run every point of a config's `sweep` block.
+
+    Validates all points before running any, gives each its own seed (from
+    the sweep seed and the point key), writes each as a complete bundle under
+    <output>/points/<key>.epx/, and aggregates their summary.json files into
+    <output>/summary.json (one row per point, with deltas against
+    sweep.reference if set). Prints that summary.
+
+    \b
+      sweep:
+        name: closure_timing
+        metrics: [attack_rate, Infected_total.peak]
+        over:
+          - path: interventions.0.start_date
+            name: start_date
+            range: {start: "2026-12-01", stop: "2027-04-01", step: 7d}
+        derive:
+          interventions.0.end_date: "{{ start_date + 21d }}"
+
+    \b
+    Examples:
+      epydemix sweep closure.yaml -o closure.epx --workers 4
+      epydemix compare closure.epx -m attack_rate
+    """
+    from .config import load_config
+    from .sweep import SweepError, run_sweep
+
+    try:
+        config = load_config(config_path)
+    except Exception as e:
+        _error_json("CONFIG_LOAD_ERROR", str(e))
+    if "sweep" not in config:
+        _error_json("INVALID_CONFIG", "The config has no 'sweep' block.")
+    if workers < 1:
+        _error_json("INVALID_CONFIG", "--workers must be at least 1.")
+
+    try:
+        summary = run_sweep(
+            config,
+            output,
+            config_dir=Path(config_path).parent,
+            config_path=config_path,
+            workers=workers,
+        )
+    except SweepError as e:
+        details = list(e.errors)
+        message = str(e) if e.point is None else f"Sweep point {e.point} is invalid."
+        err = {"error": True, "code": "INVALID_CONFIG", "message": message}
+        if e.point:
+            err["point"] = e.point
+        err["details"] = details
+        click.echo(json.dumps(err, indent=2), err=True)
+        sys.exit(1)
+    except Exception as e:
+        _error_json("RUNTIME_ERROR", str(e))
+    click.echo(f"Sweep bundle saved to: {output}", err=True)
+    _print_json({"bundle": str(Path(output).resolve()), **summary})
 
 
 # ---------------------------------------------------------------------------
@@ -737,6 +843,21 @@ def compare(bundles, metrics, variables, names, precision, raw, baseline):
     from ..io.inspect import compare_bundles, compare_deltas, round_comparison
     from .assumptions import compare as compare_assumptions
 
+    # A sweep bundle stands for its points.
+    expanded = []
+    for b in bundles:
+        try:
+            manifest = load_bundle(b)
+        except Exception as e:
+            _error_json("COMPARE_ERROR", str(e))
+        if manifest.get("type") == "SweepResults":
+            expanded += [str(Path(b) / point["bundle"]) for point in manifest["points"]]
+        else:
+            expanded.append(b)
+    # Point bundles are named after their key.
+    sweep_names = [Path(b).stem for b in expanded]
+    bundles = expanded
+
     # Parse names
     if names:
         name_list = names.split(",")
@@ -747,8 +868,13 @@ def compare(bundles, metrics, variables, names, precision, raw, baseline):
             )
     else:
         # Default: use directory stem
-        name_list = [Path(b).stem for b in bundles]
+        name_list = sweep_names
 
+    if len(set(name_list)) != len(name_list):
+        _error_json(
+            "COMPARE_ERROR",
+            "Two bundles share a name; pass distinct names with --names.",
+        )
     bundle_map = dict(zip(name_list, bundles))
 
     # Parse options

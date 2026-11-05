@@ -277,7 +277,7 @@ overrides:
 
 **Required sections:** `model`, `simulation` (with `start_date` and `end_date`).
 
-**Optional sections:** `parameters` (defaults used if omitted), `population`, `initial_conditions`, `interventions`, `overrides`, `base`, `assumptions`, `derived`, `schema_version` (current 4; older accepted; `validate --upgrade` sets it).
+**Optional sections:** `parameters` (defaults used if omitted), `population`, `initial_conditions`, `interventions`, `overrides`, `base`, `assumptions`, `derived`, `sweep`, `schema_version` (current 5; older accepted; `validate --upgrade` sets it).
 
 ### Assumptions
 
@@ -305,7 +305,7 @@ overrides:
 
 Chains are supported (child → parent → grandparent, up to 10 levels). The `base` path is resolved relative to the file that contains it. Circular references are detected and rejected.
 
-This is the recommended way to set up scenario sweeps: write one complete base config, then one small overlay per scenario. Validate and run each overlay normally — the inheritance is resolved at load time and is transparent to the rest of the pipeline.
+This is the recommended way to set up a few named scenarios (for a grid, use `sweep`): write one complete base config, then one small overlay per scenario. Validate and run each overlay normally — the inheritance is resolved at load time and is transparent to the rest of the pipeline.
 
 **Transitions lists cannot be partially overridden.** Lists replace entirely — the merge engine has no way to match which element you intend to modify (list entries have no unique key). This applies even when the compartment structure is identical and you only want to change one field inside one transition (e.g., swapping the `schedule` CSV path across vaccination scenarios). In that case, redeclare the full `transitions` list in each child config. The `parameters` dict *does* merge by key, so fixed numeric parameters can still be overridden without repetition.
 
@@ -408,7 +408,7 @@ simulation:
 
 **Do not hand-roll stochastic runs in custom Python when you need reproducibility.** Driving `run_simulations()` directly bypasses seed resolution and manifest recording, so the result is not reproducible from the bundle. Use `epydemix run` for anything whose output you intend to report, and reserve custom Python for *analysis* of the Parquet files it produces.
 
-This applies with particular force to parameter sweeps: run each point through `epydemix run` with its own config so every point carries its own seed and config, rather than looping inside one Python process where that lineage is lost.
+This applies with particular force to parameter sweeps: use `epydemix sweep` (see Comparing Scenarios), which gives every point its own bundle, seed and config, rather than looping inside one Python process where that lineage is lost.
 
 ### Reading Parquet with custom Python
 
@@ -759,19 +759,24 @@ epydemix compare baseline.epx early.epx late.epx \
 
 When `--baseline` is provided, the output includes a `_deltas_vs_<name>` key with the difference (scenario minus baseline) for each numeric metric.
 
-### Typical sweep workflow
+### Sweeps
 
-```bash
-# 1. Write one base config with the full model
-# 2. Write N small overlays (one per scenario)
-# 3. Validate and run all of them
-for f in scenario_*.yaml; do
-  epydemix validate "$f"
-  epydemix run "$f" -o "${f%.yaml}.epx"
-done
-# 4. Compare in one shot
-epydemix compare scenario_*.epx -n Baseline,Early,Late -b Baseline
+For a grid of scenarios, add a `sweep` block and run `epydemix sweep` once instead of writing overlays:
+
+```yaml
+sweep:
+  name: closure_timing
+  reference: baseline.epx            # optional: deltas against this bundle
+  metrics: [attack_rate, Infected_total.peak, Infected_total.peak_date]
+  over:                              # entries combine as a cartesian product
+    - {path: interventions.0.start_date, name: start_date,
+       range: {start: "2026-12-01", stop: "2027-04-01", step: 7d}}   # stop included
+    - {path: parameters.vaccination_rate, values: [0.0015, 0.0045]}
+  derive:                            # only {{ var + / - durations }}
+    interventions.0.end_date: "{{ start_date + 21d }}"
 ```
+
+`epydemix sweep config.yaml -o out.epx [--workers N]` validates every point before running any (an invalid point fails with its key), runs each as a full bundle `out.epx/points/<key>.epx/` with its own seed and reproducible `config.yaml`, and writes `out.epx/summary.json`: one row per point with its metrics (and `deltas`). `validate` checks every point; `compare out.epx` compares the points. Metrics are `summary.json` paths; `X_total.peak` means `variables.X_total.peak.0.5`.
 
 ### When scenarios have different compartment structures
 
